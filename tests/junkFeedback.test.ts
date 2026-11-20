@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { getJunkSenders, getKeptSenders, indexKept, junkPromptHint, keepSender, markJunkSender, unmarkJunkSender } from '../src/core/feedback';
+import { emailPromptHint, getEmailFeedback, getJunkSenders, getKeptSenders, indexEmailFeedback, indexKept, junkPromptHint, keepSender, markJunkSender, setEmailFeedback, unmarkJunkSender } from '../src/core/feedback';
 import {
   applyAiVerdict,
+  applyEmailFeedback,
+  cautionsFor,
+  messageCaution,
   applyJunk,
   applyKept,
   groupBySender,
@@ -125,5 +128,64 @@ describe('one-time login codes', () => {
     const [mixed] = groupBySender([...loginCodes('no-reply@alerts.spotify.com', 30), ...loginCodes('no-reply@alerts.spotify.com', 0, 1)], [], NOW);
     scoreGroups([mixed], NOW);
     expect(mixed.reason).not.toMatch(/expired one-time/);
+  });
+});
+
+describe('feedback on single emails', () => {
+  const shop = () =>
+    groupBySender(
+      [
+        header({ id: 1, author: 'Shop <support@shop.com>', subject: 'What do you think of your dishwasher?', read: false }),
+        header({ id: 2, author: 'Shop <support@shop.com>', subject: 'What do you think of your dishwasher?', read: false }),
+        header({ id: 3, author: 'Shop <support@shop.com>', subject: 'Tax invoice - SI033', read: false }),
+        header({ id: 4, author: 'Shop <support@shop.com>', subject: 'Thanks for your purchase', read: false }),
+      ],
+      [],
+    );
+
+  it('stores verdicts, matches copies by subject, and the latest answer wins', async () => {
+    fakeMessenger([]);
+    await setEmailFeedback([{ id: 1, address: 'Support@Shop.com', subject: 'What do you think of your dishwasher?' }], 'junk');
+    await setEmailFeedback([{ id: 3, address: 'support@shop.com', subject: 'Tax invoice - SI033' }], 'keep');
+    const idx = indexEmailFeedback(await getEmailFeedback());
+    expect(idx.verdictOf({ id: 2, subject: 'What do you think of your dishwasher?' }, 'support@shop.com')).toBe('junk');
+    expect(idx.verdictOf({ id: 99, subject: 'Tax invoice - SI033' }, 'support@shop.com')).toBe('keep');
+    expect(idx.verdictOf({ id: 4, subject: 'Thanks for your purchase' }, 'support@shop.com')).toBeUndefined();
+
+    await setEmailFeedback([{ id: 1, address: 'support@shop.com', subject: 'What do you think of your dishwasher?' }], 'keep');
+    expect(await getEmailFeedback()).toHaveLength(2);
+    await setEmailFeedback([{ id: 1, address: 'support@shop.com', subject: 'What do you think of your dishwasher?' }], null);
+    expect((await getEmailFeedback()).map((f) => f.id)).toEqual([3]);
+  });
+
+  it('nudges the sender, protects kept emails and clears the warning on junked ones', () => {
+    const g = shop();
+    scoreGroups(g);
+    const before = g[0].score;
+    applyEmailFeedback(
+      g,
+      indexEmailFeedback([
+        { id: 1, address: 'support@shop.com', subject: 'What do you think of your dishwasher?', verdict: 'junk', at: 2 },
+        { id: 4, address: 'support@shop.com', subject: 'Thanks for your purchase', verdict: 'keep', at: 1 },
+      ]),
+    );
+    expect(g[0].score).toBeGreaterThan(before);
+    expect(g[0].reason).toMatch(/You marked 2 emails from this sender as junk/);
+    const byId = (id: number) => g[0].messages.find((m) => m.id === id)!;
+    expect(messageCaution(byId(4))).toBe('you marked it not junk');
+    expect(messageCaution(byId(3))).toBe('receipt / invoice');
+    const c = cautionsFor(g, [1, 2, 4]);
+    expect(c[0].ids).toEqual([4]);
+  });
+
+  it('leaves a sender the user judged as a whole alone, and feeds examples to the model', () => {
+    const g = shop();
+    scoreGroups(g);
+    applyKept(g, indexKept([{ address: 'support@shop.com', domain: 'shop.com', at: 1 }]));
+    applyEmailFeedback(g, indexEmailFeedback([{ id: 1, address: 'support@shop.com', subject: 'What do you think of your dishwasher?', verdict: 'junk', at: 1 }]));
+    expect(g[0].score).toBe(0);
+    expect(g[0].messages.find((m) => m.id === 1)!.userVerdict).toBe('junk');
+    expect(emailPromptHint([{ id: 1, address: 'a@x.com', subject: 'Rate us', verdict: 'junk', at: 1 }])).toMatch(/JUNK[\s\S]*<a@x\.com> "Rate us"/);
+    expect(emailPromptHint([])).toBe('');
   });
 });

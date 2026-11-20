@@ -2,7 +2,7 @@ import type { MessageHeader, Verdict } from './types';
 import { VERDICTS } from './types';
 import { parseAddress, domainOf } from './text';
 import type { LlmClient } from './llm';
-import { feedbackPromptHint, getJunkSenders, getKeptSenders, indexKept, type KeptIndex } from './feedback';
+import { feedbackPromptHint, getEmailFeedback, getJunkSenders, getKeptSenders, indexEmailFeedback, indexKept, type EmailFeedbackIndex, type EmailVerdict, type KeptIndex } from './feedback';
 import { applySavedVerdicts, getSavedVerdicts, saveVerdicts } from './junkScores';
 import { collectMessages, getRawHeaders, getSentRecipients, getMyAddresses, hasUse, type SearchCriteria } from './mail';
 import { protects, staleBump, timelyInfo, type Timely } from './timely';
@@ -20,6 +20,8 @@ export interface TriageMessage {
   timely?: Timely;
   /** A one-time login/verification code older than ONE_TIME_CODE_DAYS: it can't be used any more. */
   expiredCode?: boolean;
+  /** The user's own 👍 / 👎 on this one email (feedback.ts). */
+  userVerdict?: EmailVerdict;
 }
 
 export interface SenderGroup {
@@ -410,6 +412,35 @@ export function applyJunk(groups: SenderGroup[], junk: KeptIndex): void {
   }
 }
 
+/**
+ * Applies the user's verdicts on single emails. Emails marked junk nudge their sender towards junk (unless the
+ * user already judged the whole sender); emails marked not junk are protected by the delete warning.
+ */
+export function applyEmailFeedback(groups: SenderGroup[], idx: EmailFeedbackIndex): void {
+  for (const g of groups) {
+    let junk = 0;
+    for (const m of g.messages) {
+      m.userVerdict = idx.verdictOf(m, g.address);
+      if (m.userVerdict === 'junk') junk++;
+    }
+    if (junk && !g.userKept && !g.userJunk) nudgeForJunkEmails(g, junk);
+  }
+}
+
+/** Score bump for a sender with emails the user marked junk: bigger the larger their share of its mail. */
+function nudgeForJunkEmails(g: SenderGroup, junk: number): void {
+  g.score = clamp(g.score + 0.1 + 0.2 * (junk / Math.max(1, g.messages.length)));
+  g.reason = `You marked ${junk === 1 ? '1 email' : `${junk} emails`} from this sender as junk; ${g.reason.charAt(0).toLowerCase()}${g.reason.slice(1)}`;
+}
+
+/** Why one email may be worth keeping, the user's own word first. */
+export function messageCaution(m: Pick<TriageMessage, 'flagged' | 'userVerdict' | 'importantKind'>): string | undefined {
+  if (m.flagged) return 'flagged by you';
+  if (m.userVerdict === 'keep') return 'you marked it not junk';
+  if (m.userVerdict === 'junk') return undefined;
+  return m.importantKind;
+}
+
 /** At least half of this sender's mail is one-time codes, and every one of those codes has expired. */
 export function mostlyExpiredCodes(g: SenderGroup): boolean {
   let expired = 0;
@@ -566,9 +597,14 @@ export async function runJunkTriage(
   scoreGroups(groups);
   // Reuse verdicts saved on arrival / by the background scan, then let the user's "not junk" / "junk" lists override them.
   const reused = applySavedVerdicts(groups, await getSavedVerdicts().catch(() => ({})));
-  const [kept, junk] = await Promise.all([getKeptSenders().catch(() => []), getJunkSenders().catch(() => [])]);
+  const [kept, junk, emails] = await Promise.all([
+    getKeptSenders().catch(() => []),
+    getJunkSenders().catch(() => []),
+    getEmailFeedback().catch(() => []),
+  ]);
   applyKept(groups, indexKept(kept));
   applyJunk(groups, indexKept(junk));
+  applyEmailFeedback(groups, indexEmailFeedback(emails));
   // Sort once now; the card keeps this order while AI verdicts arrive so rows don't jump under the cursor.
   groups.sort((a, b) => b.score - a.score || b.count - a.count);
 
@@ -589,7 +625,7 @@ export async function runJunkTriage(
     try {
       await classifyWithAi(deps.llm, forAi, {
         signal: deps.signal,
-        hint: feedbackPromptHint(kept, junk),
+        hint: feedbackPromptHint(kept, junk, emails),
         onProgress: (d, t) => {
           p(`AI is reviewing senders… ${d}/${t}`, d / t);
           deps.onUpdate?.();
@@ -729,7 +765,7 @@ export function cautionsFor(
     for (const m of g.messages) {
       if (!want.has(m.id)) continue;
       seen.add(m.id);
-      const kind = m.flagged ? 'flagged by you' : m.importantKind;
+      const kind = messageCaution(m);
       if (kind || senderLevel) add(g, g.address, m.id, m.subject, kind);
     }
   }

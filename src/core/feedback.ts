@@ -113,7 +113,78 @@ export function junkPromptHint(list: KeptSender[], max = 15): string {
   return `\nThe user has told us these senders ARE junk. Treat similar mail (same organisation, same kind of mail) as unwanted:\n${lines.join('\n')}`;
 }
 
-/** Both feedback lists as one prompt addition. */
-export function feedbackPromptHint(kept: KeptSender[], junk: KeptSender[]): string {
-  return keptPromptHint(kept) + junkPromptHint(junk);
+/*
+ * Feedback on single emails (the 👍 / 👎 next to each email in the clean-up review). More specific than the
+ * sender lists: "the invoices from this shop matter, the review requests don't". An entry matches an email by
+ * id, or by sender + identical subject (ids change when Thunderbird moves mail, and duplicates get the same
+ * answer). Like the sender lists, it only teaches MailMind; no email is moved.
+ */
+export type EmailVerdict = 'keep' | 'junk';
+
+export interface EmailFeedback {
+  id: number;
+  address: string;
+  subject: string;
+  verdict: EmailVerdict;
+  at: number;
+}
+
+const EMAIL_KEY = 'emailFeedback';
+const MAX_EMAILS = 2000;
+
+const emailKey = (address: string, subject: string) => `${address.toLowerCase()}\n${subject.trim().toLowerCase()}`;
+
+export async function getEmailFeedback(): Promise<EmailFeedback[]> {
+  const s = await messenger.storage.local.get(EMAIL_KEY);
+  return (s?.[EMAIL_KEY] as EmailFeedback[]) ?? [];
+}
+
+/** Records the user's verdict on these emails; null forgets it. The latest answer wins. */
+export async function setEmailFeedback(emails: { id: number; address: string; subject: string }[], verdict: EmailVerdict | null): Promise<void> {
+  const ids = new Set(emails.map((e) => e.id));
+  const keys = new Set(emails.map((e) => emailKey(e.address, e.subject)));
+  const list = (await getEmailFeedback()).filter((f) => !ids.has(f.id) && !keys.has(emailKey(f.address, f.subject)));
+  if (verdict) {
+    const at = Date.now();
+    const added = new Set<string>();
+    for (const e of emails) {
+      const k = emailKey(e.address, e.subject);
+      if (added.has(k)) continue; // duplicates are matched by subject anyway
+      added.add(k);
+      list.unshift({ id: e.id, address: e.address.toLowerCase(), subject: e.subject.slice(0, 200), verdict, at });
+    }
+  }
+  await messenger.storage.local.set({ [EMAIL_KEY]: list.slice(0, MAX_EMAILS) });
+}
+
+export interface EmailFeedbackIndex {
+  verdictOf(m: { id: number; subject: string }, address: string): EmailVerdict | undefined;
+}
+
+export function indexEmailFeedback(list: EmailFeedback[]): EmailFeedbackIndex {
+  const byId = new Map<number, EmailVerdict>();
+  const byKey = new Map<string, EmailVerdict>();
+  // Newest first in storage, so the first entry seen for a key is the latest answer.
+  for (const f of list) {
+    if (!byId.has(f.id)) byId.set(f.id, f.verdict);
+    const k = emailKey(f.address, f.subject);
+    if (!byKey.has(k)) byKey.set(k, f.verdict);
+  }
+  return { verdictOf: (m, address) => byId.get(m.id) ?? byKey.get(emailKey(address, m.subject)) };
+}
+
+/** Prompt addition with example emails the user judged one by one. */
+export function emailPromptHint(list: EmailFeedback[], max = 10): string {
+  const line = (f: EmailFeedback) => `- <${f.address}> "${f.subject.slice(0, 70)}"`;
+  const keep = list.filter((f) => f.verdict === 'keep').slice(0, max);
+  const junk = list.filter((f) => f.verdict === 'junk').slice(0, max);
+  return (
+    (keep.length ? `\nSingle emails the user said they WANT (mail like these is worth keeping):\n${keep.map(line).join('\n')}` : '') +
+    (junk.length ? `\nSingle emails the user said are JUNK (mail like these is unwanted, even from senders they otherwise keep):\n${junk.map(line).join('\n')}` : '')
+  );
+}
+
+/** All feedback lists as one prompt addition. */
+export function feedbackPromptHint(kept: KeptSender[], junk: KeptSender[], emails: EmailFeedback[] = []): string {
+  return keptPromptHint(kept) + junkPromptHint(junk) + emailPromptHint(emails);
 }

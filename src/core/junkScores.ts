@@ -1,7 +1,7 @@
 import type { MessageHeader, Verdict } from './types';
 import { VERDICTS } from './types';
 import type { LlmClient } from './llm';
-import { feedbackPromptHint, getJunkSenders, getKeptSenders, indexKept, type KeptSender } from './feedback';
+import { feedbackPromptHint, getEmailFeedback, getJunkSenders, getKeptSenders, indexKept, type KeptSender } from './feedback';
 import { getRawHeaders } from './mail';
 import { applyAiVerdict, classifyWithAi, groupBySender, mapLimit, scoreGroups, type SenderGroup } from './triage';
 
@@ -148,8 +148,9 @@ export async function scoreSenders(
   });
   scoreGroups(todo);
   const junk = await getJunkSenders().catch(() => []);
+  const emails = await getEmailFeedback().catch(() => []);
   try {
-    await classifyWithAi(llm, todo, { signal, hint: feedbackPromptHint(kept, junk) });
+    await classifyWithAi(llm, todo, { signal, hint: feedbackPromptHint(kept, junk, emails) });
   } finally {
     await saveVerdicts(todo, now);
   }

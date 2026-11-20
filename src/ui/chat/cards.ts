@@ -1,7 +1,7 @@
 import { el, confirmButton, plural, progressBar } from '../dom';
 import type { TriageResult, SenderGroup, Caution } from '../../core/triage';
-import { isLikelyJunk, markKept, markUserJunk, cautionsFor, senderCautions, importanceOf } from '../../core/triage';
-import { keepSender, unkeepSender, markJunkSender, unmarkJunkSender } from '../../core/feedback';
+import { isLikelyJunk, markKept, markUserJunk, cautionsFor, senderCautions, importanceOf, messageCaution, type TriageMessage } from '../../core/triage';
+import { keepSender, unkeepSender, markJunkSender, unmarkJunkSender, setEmailFeedback, type EmailVerdict } from '../../core/feedback';
 import type { FilingResult } from '../../core/filing';
 import type { Proposal, Draft, RuleDraft } from '../../core/tools';
 import type { ActionKind, MailFolder } from '../../core/types';
@@ -301,6 +301,54 @@ export function senderReviewCard(result: TriageResult, deps: CardDeps): SenderRe
     deps.note(`User removed ${g.address} from their not-junk list.`);
   }
 
+  /**
+   * 👍 / 👎 on single emails: teaches MailMind about that kind of email without judging the whole sender.
+   * Emails from the same sender with the same subject get the same answer. Moves no email.
+   */
+  async function judgeEmails(g: SenderGroup, msgs: TriageMessage[], verdict: EmailVerdict | null) {
+    const subjects = new Set(msgs.map((m) => m.subject));
+    const affected = g.messages.filter((m) => subjects.has(m.subject));
+    const prev = affected.map((m) => m.userVerdict);
+    for (const m of affected) m.userVerdict = verdict ?? undefined;
+    render();
+    try {
+      await setEmailFeedback(affected.map((m) => ({ id: m.id, address: g.address, subject: m.subject })), verdict);
+      const list = [...subjects].slice(0, 5).map((x) => `"${x}"`).join(', ');
+      deps.note(
+        verdict
+          ? `User marked ${plural(affected.length, 'email')} from ${g.address} (${list}) as ${verdict === 'keep' ? 'NOT junk — keep mail like this' : 'JUNK — mail like this is unwanted'}. This is about these emails, not the whole sender.`
+          : `User cleared their verdict on ${plural(affected.length, 'email')} from ${g.address} (${list}).`,
+      );
+    } catch (e) {
+      affected.forEach((m, i) => (m.userVerdict = prev[i]));
+      render();
+      status.error(e);
+    }
+  }
+
+  function emailVerdictButtons(g: SenderGroup, m: TriageMessage): HTMLElement {
+    const btn = (v: EmailVerdict, icon: string, label: string) => {
+      const on = m.userVerdict === v;
+      const b = el(
+        'button',
+        {
+          class: `small ghost email-verdict${on ? ` on ${v}` : ''}`,
+          title: on ? `You marked this email ${label.toLowerCase()} — click to undo` : `${label} — just this email (and copies with the same subject); no email is moved`,
+          'aria-pressed': String(on),
+        },
+        on ? `${icon} ${label.toLowerCase()}` : icon,
+      );
+      b.addEventListener('click', (e) => {
+        // The row is a <label>; don't let the click tick the checkbox.
+        e.preventDefault();
+        e.stopPropagation();
+        judgeEmails(g, [m], on ? null : v);
+      });
+      return b;
+    };
+    return el('span', { class: 'email-verdicts' }, btn('keep', '👍', 'Not junk'), btn('junk', '👎', 'Junk'));
+  }
+
   function senderRow(g: SenderGroup): HTMLElement {
     const live = liveMessages(g);
     const sel = selected.get(g.address);
@@ -336,7 +384,7 @@ export function senderReviewCard(result: TriageResult, deps: CardDeps): SenderRe
       : g.userJunk
         ? el('span', { class: 'badge junk', title: 'You marked this sender as junk' }, 'junk (you)')
         : el('span', { class: `badge ${g.verdict}` }, VERDICT_LABELS[g.verdict] ?? g.verdict);
-    const kinds = [...new Set(live.map((m) => (m.flagged ? 'flagged by you' : m.importantKind)).filter(Boolean))] as string[];
+    const kinds = [...new Set(live.map(messageCaution).filter(Boolean))] as string[];
     const cautionText = [...senderCautions(g), ...kinds];
     const caution = cautionText.length
       ? el('div', { class: 'small caution', title: 'You will be asked to confirm before these are deleted' }, `⚠ May be important: ${cautionText.join('; ')}`)
@@ -382,7 +430,7 @@ export function senderReviewCard(result: TriageResult, deps: CardDeps): SenderRe
           e.preventDefault();
           openMessage(m.id);
         });
-        const why = m.flagged ? 'flagged by you' : m.importantKind;
+        const why = messageCaution(m);
         msgs.append(
           el(
             'label',
@@ -397,6 +445,7 @@ export function senderReviewCard(result: TriageResult, deps: CardDeps): SenderRe
                 : m.timely && !m.timely.upcoming
                 ? el('span', { class: 'small muted', title: 'This notice is about a date that has passed' }, `⏱ ${m.timely.label}`)
                 : null,
+            emailVerdictButtons(g, m),
             open,
           ),
         );
@@ -588,10 +637,31 @@ export function senderReviewCard(result: TriageResult, deps: CardDeps): SenderRe
   const readBtn = el('button', null, 'Mark read');
   readBtn.addEventListener('click', () => run('mark_read'));
   const actionButtons = [deleteBtn, moveBtn, archiveBtn, junkBtn, readBtn];
-  const keepBtn = el('button', { title: 'Remember these senders as wanted mail' }, '👍 Not junk');
-  keepBtn.addEventListener('click', () => keep(selectedSenders().map((a) => result.groups.find((g) => g.address === a)!).filter(Boolean)));
-  const teachBtn = el('button', { title: 'Teach MailMind these senders are unwanted (no email is moved)' }, '👎 Junk');
-  teachBtn.addEventListener('click', () => teachJunk(selectedSenders().map((a) => result.groups.find((g) => g.address === a)!).filter(Boolean)));
+  /**
+   * The bottom 👍 / 👎 buttons: a fully ticked sender is judged as a whole; where only some of a sender's
+   * emails are ticked, just those emails are judged.
+   */
+  function judgeSelection(verdict: EmailVerdict) {
+    const whole: SenderGroup[] = [];
+    for (const [address, ids] of selected) {
+      const g = result.groups.find((x) => x.address === address);
+      if (!g) continue;
+      const live = liveMessages(g);
+      const picked = live.filter((m) => ids.has(m.id));
+      if (!picked.length) continue;
+      if (picked.length === live.length) whole.push(g);
+      else {
+        judgeEmails(g, picked, verdict);
+        if (verdict === 'keep') selected.delete(address);
+      }
+    }
+    if (whole.length) verdict === 'keep' ? keep(whole) : teachJunk(whole);
+    else render();
+  }
+  const keepBtn = el('button', { title: 'Not junk: remember ticked senders as wanted mail (or just the ticked emails, where only some of a sender’s are ticked)' }, '👍 Not junk');
+  keepBtn.addEventListener('click', () => judgeSelection('keep'));
+  const teachBtn = el('button', { title: 'Junk: teach MailMind ticked senders are unwanted (or just the ticked emails, where only some of a sender’s are ticked). No email is moved.' }, '👎 Junk');
+  teachBtn.addEventListener('click', () => judgeSelection('junk'));
 
   toggleAll.addEventListener('change', () => {
     for (const g of visible()) setSender(g, toggleAll.checked);
