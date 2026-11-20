@@ -1,0 +1,50 @@
+[
+  {
+    "namespace": "glodaSearch",
+    "description": "Read-only lookups in Thunderbird's Global Search (Gloda) full-text index.",
+    "functions": [
+      {
+        "name": "isAvailable",
+        "type": "function",
+        "description": "True when Global Search indexing is switched on.",
+        "async": true,
+        "parameters": []
+      },
+      {
+        "name": "attachmentInfo",
+        "type": "function",
+        "description": "Whether messages have attachments, from header flags and the index, without opening them. Resolves to [{id, has}]; unknown ids are left out.",
+        "async": true,
+        "parameters": [
+          { "name": "ids", "type": "array", "items": { "type": "integer" } },
+          {
+            "name": "options",
+            "type": "object",
+            "optional": true,
+            "properties": { "timeoutMs": { "type": "integer", "optional": true } }
+          }
+        ]
+      },
+      {
+        "name": "search",
+        "type": "function",
+        "description": "Searches the index once per term. Resolves to [{term, ids, complete}] where ids are WebExtension message ids, newest first.",
+        "async": true,
+        "parameters": [
+          { "name": "terms", "type": "array", "items": { "type": "string" } },
+          {
+            "name": "options",
+            "type": "object",
+            "optional": true,
+            "properties": {
+              "fromDate": { "type": "number", "optional": true },
+              "toDate": { "type": "number", "optional": true },
+              "limit": { "type": "integer", "optional": true },
+              "timeoutMs": { "type": "integer", "optional": true }
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -21,7 +21,7 @@ MailMind scans 2021, groups the mail by sender, and shows a review list like *"j
    npm install
    npm run package        # → artifacts/mailmind-0.5.0.xpi
    ```
-4. In Thunderbird, go to **Tools → Add-ons and Themes → ⚙ → Install Add-on From File…** and pick the `.xpi`.
+4. In Thunderbird, go to **Tools → Add-ons and Themes → ⚙ → Install Add-on From File…** and pick the `.xpi`. Thunderbird warns that MailMind has full access to Thunderbird. This is because of a small read-only Experiment (`src/experiments/gloda`) that looks up words in Thunderbird's Global Search index, so "find all emails about…" finishes in about a second. It never changes mail or settings. If it is unavailable (indexing switched off under **Settings → General → Indexing**, or broken by a Thunderbird update), MailMind falls back to reading emails itself, which is slower.
 5. Open MailMind's settings from the add-on's **Preferences** or the chat's **Settings** button, then click **Test connection & load models**. The default is `gemma4:latest` on `http://localhost:11434/v1`.
 6. *Optional:* run `ollama pull nomic-embed-text` and enter it as the embedding model to turn on "search by meaning".
 

@@ -1,6 +1,6 @@
 {
   "name": "mailmind",
-  "version": "0.7.0",
+  "version": "0.8.1",
   "private": true,
   "description": "Local-AI email assistant add-on for Thunderbird",
   "type": "module",

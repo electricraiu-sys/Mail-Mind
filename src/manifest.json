@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "MailMind – Local AI Email Assistant",
   "short_name": "MailMind",
-  "version": "0.7.0",
+  "version": "0.8.1",
   "description": "Chat with a local AI (Ollama, LM Studio, llama.cpp…) to read, write, review, sort, filter, file and clean up your email. Nothing leaves your computer.",
   "author": "MailMind",
   "browser_specific_settings": {
@@ -60,6 +60,16 @@
     "http://localhost/*",
     "http://127.0.0.1/*"
   ],
+  "experiment_apis": {
+    "glodaSearch": {
+      "schema": "experiments/gloda/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "paths": [["glodaSearch"]],
+        "script": "experiments/gloda/implementation.js"
+      }
+    }
+  },
   "optional_host_permissions": [
     "http://*/*",
     "https://*/*"

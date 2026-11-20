@@ -397,3 +397,49 @@ export function headerLine(m: MessageHeader): string {
   const flags = [m.read ? '' : 'unread', m.flagged ? 'flagged' : '', m.junk ? 'junk' : ''].filter(Boolean).join(',');
   return `[${m.id}] ${date} | ${m.author} | ${m.subject || '(no subject)'} | ${m.folder?.path ?? ''}${flags ? ' | ' + flags : ''}`;
 }
+
+export interface IndexHits {
+  term: string;
+  ids: number[];
+  /** False if the term had more matches than the lookup returns. */
+  complete: boolean;
+}
+
+/**
+ * Looks terms up in Thunderbird's Global Search index (MailMind's read-only Experiment API).
+ * Near-instant, unlike messages.query's text search. Returns null when the index can't be used
+ * (indexing switched off, Experiment missing or broken by a Thunderbird update), so callers fall back.
+ */
+export async function searchIndex(terms: string[], c: SearchCriteria, timeoutMs = 30_000): Promise<IndexHits[] | null> {
+  const api = (globalThis as any).messenger?.glodaSearch;
+  if (!api || !terms.length) return null;
+  try {
+    if (!(await api.isAvailable())) return null;
+    const opts: Record<string, number> = { limit: 5000, timeoutMs };
+    const from = parseDate(c.fromDate, false);
+    const to = parseDate(c.toDate, true);
+    if (from) opts.fromDate = from.getTime();
+    if (to) opts.toDate = to.getTime();
+    const r = await api.search(terms, opts);
+    return Array.isArray(r) ? r : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Which messages have attachments, answered from header flags and Thunderbird's index without
+ * opening them (Experiment API). Ids missing from the result are unknown. Empty map if unavailable.
+ */
+export async function attachmentFlags(ids: number[], timeoutMs = 30_000): Promise<Map<number, boolean>> {
+  const out = new Map<number, boolean>();
+  const api = (globalThis as any).messenger?.glodaSearch;
+  if (!api?.attachmentInfo || !ids.length) return out;
+  try {
+    const r = await api.attachmentInfo(ids, { timeoutMs });
+    for (const x of Array.isArray(r) ? r : []) if (typeof x?.id === 'number') out.set(x.id, !!x.has);
+  } catch {
+    /* fall back to opening messages */
+  }
+  return out;
+}

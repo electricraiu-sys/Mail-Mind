@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { crc32 as nodeCrc32 } from 'node:zlib';
-import { findAbout, cleanPlan, fallbackPlan } from '../src/core/topic';
+import { findAbout, cleanPlan, fallbackPlan, pickBodyTerms } from '../src/core/topic';
 import { collectAttachments, summarizeAttachments, categoryOf, isSmallInlineImage, uniqueNames } from '../src/core/attachments';
 import { makeZip, crc32 } from '../src/core/zip';
 import { createTools, getResultSet, type ToolUi } from '../src/core/tools';
@@ -50,7 +50,8 @@ function mailbox() {
 describe('findAbout', () => {
   it('expands the topic, searches every term, merges and drops off-topic hits', async () => {
     mailbox();
-    const r = await findAbout('my stock trading', {}, { llm: topicLlm() });
+    // textScanMax 0: a mailbox too big to read, so Thunderbird's own text search runs per keyword.
+    const r = await findAbout('my stock trading', {}, { llm: topicLlm(), textScanMax: 0 });
     const ids = r.hits.map((h) => h.header.id).sort();
     expect(ids).toEqual([1, 2, 3]); // shoe promo removed by AI, Mom never matched, Trash excluded
     expect(r.candidates).toBe(4);
@@ -104,6 +105,116 @@ describe('findAbout', () => {
     expect(r.hits.length).toBe(300 + 600); // clear matches + odd-numbered "stock update"s
     const dates = r.hits.map((h) => new Date(h.header.date).getTime());
     expect(dates).toEqual([...dates].sort((a, b) => b - a));
+  });
+
+  it('reads each unmatched email once, checks every keyword in it, and never asks Thunderbird to search text', async () => {
+    fakeMessenger(
+      [
+        header({ id: 1, author: 'CommSec <noreply@commsec.com.au>', subject: 'Statement', date: new Date('2026-03-01') }),
+        header({ id: 2, author: 'Registry <x@registry.example>', subject: 'Notice', date: new Date('2026-04-01') }),
+        header({ id: 3, author: 'Mom <mom@family.net>', subject: 'Lunch', date: new Date('2026-05-01') }),
+      ],
+      undefined,
+      { bodies: { 2: 'Your contract note: bought 100 BHP shares', 3: 'see you Sunday' } },
+    );
+    const m = (globalThis as any).messenger.messages;
+    const realQuery = m.query;
+    const realText = m.listInlineTextParts;
+    const queries: any[] = [];
+    const read: number[] = [];
+    m.query = async (q: any) => (queries.push(q), realQuery(q));
+    m.listInlineTextParts = async (id: number) => (read.push(id), realText(id));
+    const llm = { completeJson: async (sys: string, user: string) =>
+      sys.includes('search terms') ? { keywords: ['shares', 'contract note', 'dividend'], senders: ['CommSec'] }
+        : { relevant: JSON.parse(user.slice(user.indexOf('Emails: ') + 8)).map((e: any) => e.i) } } as unknown as LlmClient;
+    const r = await findAbout('my share market trading', {}, { llm });
+    expect(queries.some((q) => q.fullText)).toBe(false);
+    expect(read.sort()).toEqual([2, 3]); // CommSec already matched by sender, so its text isn't needed
+    expect(r.hits.map((h) => h.header.id).sort()).toEqual([1, 2]);
+    expect(r.hits.find((h) => h.header.id === 2)!.matched).toEqual(['"shares"', '"contract note"']);
+    expect(r.bodySearch).toEqual({ terms: ['shares', 'contract note', 'dividend'], complete: true });
+  });
+
+  it('"with attachments" never asks Thunderbird to scan by attachment, and skips text of emails without any', async () => {
+    mailbox();
+    const m = (globalThis as any).messenger.messages;
+    const realQuery = m.query;
+    const realText = m.listInlineTextParts;
+    const queries: any[] = [];
+    const read: number[] = [];
+    m.query = async (q: any) => (queries.push(q), realQuery(q));
+    m.listInlineTextParts = async (id: number) => (read.push(id), realText(id));
+    const r = await findAbout('my stock trading', { hasAttachment: true }, { llm: topicLlm() });
+    expect(queries.every((q) => q.attachment === undefined)).toBe(true);
+    expect(read).not.toContain(5); // Mom has no attachments, so her email is never read
+    expect(r.hits.map((h) => h.header.id).sort()).toEqual([1, 2, 3]);
+    expect(r.candidates).toBe(3); // shoe promo dropped (no attachment) before the AI check
+  });
+
+  it('uses the Global Search index when available: every keyword, no mailbox reads, scope respected', async () => {
+    mailbox();
+    const m = (globalThis as any).messenger;
+    const realQuery = m.messages.query;
+    const queries: any[] = [];
+    const read: number[] = [];
+    m.messages.query = async (q: any) => (queries.push(q), realQuery(q));
+    m.messages.listInlineTextParts = async (id: number) => (read.push(id), []);
+    const asked: any[] = [];
+    m.glodaSearch = {
+      isAvailable: async () => true,
+      // Index finds Mom's email for "dividend" (she mentioned one), the Trash copy and an id outside the scope.
+      search: async (terms: string[], opts: any) => (asked.push({ terms, opts }), terms.map((t) => ({ term: t, ids: t === 'dividend' ? [5, 6, 999] : [], complete: true }))),
+    };
+    try {
+      const r = await findAbout('my stock trading', { fromDate: '2021' }, { llm: topicLlm(), verify: false });
+      expect(asked[0].terms).toEqual(['stock', 'trade confirmation', 'dividend']);
+      expect(asked[0].opts.fromDate).toBe(new Date(2021, 0, 1).getTime());
+      expect(queries.some((q) => q.fullText)).toBe(false);
+      expect(read).toEqual([]);
+      expect(r.hits.map((h) => h.header.id).sort()).toEqual([1, 2, 3, 4, 5]); // 6 is in Trash, 999 out of scope
+      expect(r.hits.find((h) => h.header.id === 5)!.matched).toEqual(['"dividend"']);
+      expect(r.bodySearch).toEqual({ terms: ['stock', 'trade confirmation', 'dividend'], complete: true, index: true });
+    } finally {
+      delete m.glodaSearch;
+    }
+  });
+
+  it('answers "has attachments" from flags/index first and opens only the emails it cannot answer for', async () => {
+    mailbox();
+    const m = (globalThis as any).messenger;
+    const realList = m.messages.listAttachments;
+    const opened: number[] = [];
+    m.messages.listAttachments = async (id: number) => (opened.push(id), realList(id));
+    m.glodaSearch = {
+      isAvailable: async () => true,
+      search: async (terms: string[]) => terms.map((t) => ({ term: t, ids: [], complete: true })),
+      // Knows 1 and 2 have attachments and the shoe promo (4) has none; 3 is unknown.
+      attachmentInfo: async (ids: number[]) => ids.filter((id) => id !== 3).map((id) => ({ id, has: id !== 4 })),
+    };
+    try {
+      const r = await findAbout('my stock trading', { hasAttachment: true }, { llm: topicLlm() });
+      expect(opened).toEqual([3]);
+      expect(r.hits.map((h) => h.header.id).sort()).toEqual([1, 2, 3]);
+    } finally {
+      delete m.glodaSearch;
+    }
+  });
+
+  it('falls back to reading emails when the index lookup fails', async () => {
+    mailbox();
+    const m = (globalThis as any).messenger;
+    m.glodaSearch = { isAvailable: async () => true, search: async () => { throw new Error('broken by update'); } };
+    try {
+      const r = await findAbout('my stock trading', {}, { llm: topicLlm() });
+      expect(r.hits.map((h) => h.header.id).sort()).toEqual([1, 2, 3]);
+      expect(r.bodySearch?.index).toBeUndefined();
+    } finally {
+      delete m.glodaSearch;
+    }
+  });
+
+  it('picks body-search terms in order, skipping ones an earlier term already covers', () => {
+    expect(pickBodyTerms(['shares', 'contract note', 'Shares trading', 'ASX', 'asx announcement', 'dividend'], 4)).toEqual(['shares', 'contract note', 'ASX', 'dividend']);
   });
 
   it('cleans model plans and falls back sensibly', () => {
@@ -206,7 +317,7 @@ describe('slow Thunderbird searches', () => {
 
   it('keeps subject/sender matches when the body search hits its time budget', async () => {
     const { aborted } = hangingBodySearch();
-    const r = await findAbout('my stock trading', {}, { llm: topicLlm(), bodyBudgetMs: 50 });
+    const r = await findAbout('my stock trading', {}, { llm: topicLlm(), bodyBudgetMs: 50, textScanMax: 0 });
     expect(r.hits.map((h) => h.header.id).sort()).toEqual([1, 2, 3]); // 2 via sender, 3 via subject
     expect(r.bodySearch).toEqual({ terms: ['stock', 'trade confirmation', 'dividend'], complete: false });
     expect(aborted).toContain('slow-list');
@@ -215,7 +326,7 @@ describe('slow Thunderbird searches', () => {
   it('Stop cancels a search that is still running', async () => {
     const { aborted } = hangingBodySearch();
     const ctl = new AbortController();
-    const run = findAbout('my stock trading', {}, { llm: topicLlm(), signal: ctl.signal });
+    const run = findAbout('my stock trading', {}, { llm: topicLlm(), signal: ctl.signal, textScanMax: 0 });
     setTimeout(() => ctl.abort(), 20);
     await expect(run).rejects.toMatchObject({ name: 'AbortError' });
     expect(aborted).toContain('slow-list');

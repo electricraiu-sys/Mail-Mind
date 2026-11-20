@@ -20,6 +20,7 @@ async function copyStatic() {
   await mkdir('dist', { recursive: true });
   await cp('src/manifest.json', 'dist/manifest.json');
   await cp('src/icons', 'dist/icons', { recursive: true });
+  await cp('src/experiments', 'dist/experiments', { recursive: true });
   // Copy every .html / .css file under src/ui, keeping the folder structure.
   async function walk(dir) {
     for (const e of await readdir(dir, { withFileTypes: true })) {
