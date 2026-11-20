@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MailMind settings</title>
+  <link rel="stylesheet" href="../common.css">
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <h1><img src="../../icons/icon.svg" alt="" width="26" height="26"> MailMind settings</h1>
+
+    <section>
+      <h2>AI connection</h2>
+      <p class="muted small">Any OpenAI-compatible server works: Ollama (<code>http://localhost:11434/v1</code>), LM Studio (<code>http://localhost:1234/v1</code>), llama.cpp server (<code>http://localhost:8080/v1</code>), vLLM…</p>
+      <div class="field">
+        <label for="baseUrl">Server URL</label>
+        <div class="row">
+          <input id="baseUrl" type="url" style="flex:1">
+          <button id="preset-ollama" class="small">Ollama</button>
+          <button id="preset-lmstudio" class="small">LM Studio</button>
+          <button id="preset-llamacpp" class="small">llama.cpp</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="apiKey">API key <span class="muted small">(usually empty for local servers)</span></label>
+        <input id="apiKey" type="password" autocomplete="off">
+      </div>
+      <div class="row">
+        <button id="btn-test" class="primary">Test connection &amp; load models</button>
+        <span id="test-result" class="small"></span>
+      </div>
+      <div class="field">
+        <label for="model">Chat model</label>
+        <div class="row">
+          <input id="model" type="text" list="models" style="flex:1" placeholder="e.g. gemma4:latest">
+          <datalist id="models"></datalist>
+        </div>
+      </div>
+      <div class="field">
+        <label for="embeddingModel">Embedding model for “search by meaning” <span class="muted small">(optional, e.g. nomic-embed-text)</span></label>
+        <input id="embeddingModel" type="text" list="models" placeholder="leave empty to disable">
+      </div>
+      <details class="help">
+        <summary>Connection troubleshooting</summary>
+        <ul class="small">
+          <li><strong>403 Forbidden from Ollama:</strong> set the Windows environment variable <code>OLLAMA_ORIGINS</code> to <code>moz-extension://*</code>, then quit and restart Ollama.</li>
+          <li><strong>Short or forgetful answers:</strong> Ollama's default context window is small. Set <code>OLLAMA_CONTEXT_LENGTH=16384</code> (or higher if your GPU allows) and restart Ollama.</li>
+          <li><strong>LM Studio:</strong> start the local server and enable “CORS” in its server settings.</li>
+          <li><strong>Server on another computer:</strong> use its LAN address; MailMind will ask for permission to reach it.</li>
+        </ul>
+      </details>
+    </section>
+
+    <section>
+      <h2>Behaviour</h2>
+      <div class="grid2">
+        <div class="field">
+          <label for="toolMode">Tool calling</label>
+          <select id="toolMode">
+            <option value="auto">Automatic (recommended)</option>
+            <option value="native">Native tool calls</option>
+            <option value="json">Compatibility mode (JSON)</option>
+          </select>
+          <span id="detected" class="small muted"></span>
+        </div>
+        <div class="field">
+          <label for="temperature">Creativity (temperature)</label>
+          <input id="temperature" type="number" min="0" max="1.5" step="0.1">
+        </div>
+        <div class="field">
+          <label for="maxToolSteps">Max AI steps per request</label>
+          <input id="maxToolSteps" type="number" min="1" max="30">
+        </div>
+        <div class="field">
+          <label for="maxCharsPerMessage">Max characters read per email</label>
+          <input id="maxCharsPerMessage" type="number" min="500" max="50000" step="500">
+        </div>
+        <div class="field">
+          <label for="historyCharBudget">Conversation memory (characters)</label>
+          <input id="historyCharBudget" type="number" min="4000" max="400000" step="2000">
+        </div>
+      </div>
+      <label class="row"><input id="warnMissingAttachment" type="checkbox"> Warn before sending if I mention an attachment but none is attached</label>
+      <label class="row"><input id="learnStyleFromSent" type="checkbox"> Draft replies in my writing style (reads a few of my sent emails, locally)</label>
+      <div class="row" style="margin-top:12px">
+        <button id="btn-save" class="primary">Save</button>
+        <span id="save-result" class="small"></span>
+      </div>
+    </section>
+
+    <section>
+      <h2>Automation <span class="muted small">(tagging and the briefing are off by default)</span></h2>
+      <label class="row"><input id="autoTag" type="checkbox"> Tag new mail with the AI</label>
+      <p class="muted small">New emails (from the last 2 days, up to 50 at a time) get one MailMind tag. Every batch shows up under Recent actions and can be undone.</p>
+      <div id="tagKeys" class="row small"></div>
+      <h3 style="margin-top:16px">Junk scores</h3>
+      <label class="row"><input id="junkScoreNewMail" type="checkbox"> Give new mail a junk score as it arrives</label>
+      <label class="row"><input id="junkBackfill" type="checkbox"> Score my older mail in the background</label>
+      <p class="muted small">Saves the AI’s opinion of each sender so clean-ups don’t ask about them again. Read-only: no email is changed. The background scan works back one month at a time and pauses whenever you use the chat or popups. “Not junk” always overrides a saved score, and pressing Junk / Not Junk in Thunderbird makes MailMind judge that sender again.</p>
+      <p id="junk-status" class="small"></p>
+      <h3 style="margin-top:16px">Smart categories</h3>
+      <label class="row"><input id="smartCategories" type="checkbox"> Let the AI suggest topic categories and sort senders into the ones I approve</label>
+      <p class="muted small">Topics like “Kids’ school” or “Car”, noticed in your mail about once a week. Nothing is created until you approve it in the chat, and your own changes always win. They don’t change any email and don’t affect junk scores.</p>
+      <div id="smart"></div>
+      <label class="row" style="margin-top:12px"><input id="digestEnabled" type="checkbox"> Daily briefing at <input id="digestTime" type="time" style="width:auto"></label>
+      <p class="muted small">Shows a notification with unread mail, important emails and follow-ups. Click it to open the briefing in the chat. If Thunderbird is closed at that time, it runs when you next start it.</p>
+      <div class="row">
+        <button id="btn-digest-now">Run briefing now</button>
+        <span id="digest-result" class="small"></span>
+      </div>
+      <h3 style="margin-top:16px">Follow-ups</h3>
+      <div class="grid2">
+        <div class="field">
+          <label for="followupDays">Count a sent email as unanswered after (days)</label>
+          <input id="followupDays" type="number" min="0" max="60">
+        </div>
+        <div class="field">
+          <label for="followupLookbackDays">Look back (days)</label>
+          <input id="followupLookbackDays" type="number" min="1" max="365">
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button id="btn-save2" class="primary">Save</button>
+        <span id="save-result2" class="small"></span>
+      </div>
+    </section>
+
+    <section>
+      <h2>Filter rules</h2>
+      <p class="muted small">Rules run automatically on new mail. Create them from the chat (“move newsletters to Reading”) or from the clean-up review.</p>
+      <div id="rules"></div>
+    </section>
+
+    <section>
+      <h2>Not junk</h2>
+      <p class="muted small">Senders you marked “Not junk” in the clean-up review. They're never suggested for deletion, the AI uses them as examples of mail you want, and AI-category rules skip them.</p>
+      <div id="kept"></div>
+    </section>
+
+    <section>
+      <h2>Recent actions</h2>
+      <p class="muted small">Everything MailMind changed. Deleted emails are in Trash and can be restored here.</p>
+      <div id="undo"></div>
+    </section>
+
+    <section>
+      <h2>Data</h2>
+      <div class="row">
+        <button id="btn-clear-chat">Clear chat history</button>
+        <button id="btn-clear-emb">Clear search index</button>
+        <button id="btn-clear-junk">Clear saved junk scores</button>
+        <button id="btn-clear-smart">Clear smart categories</button>
+        <span id="data-result" class="small"></span>
+      </div>
+      <p class="muted small">MailMind stores settings, rules, the undo history and search embeddings only inside Thunderbird. It never contacts anything except the AI server above.</p>
+    </section>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>

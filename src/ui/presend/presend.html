@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>MailMind – check before sending</title>
+  <link rel="stylesheet" href="../common.css">
+  <style>
+    body { padding: 18px; }
+    h1 { font-size: 16px; margin: 0 0 8px; }
+    .row { margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <h1>📎 Forgot an attachment?</h1>
+  <p>Your email mentions an attachment, but nothing is attached.</p>
+  <div id="err" class="notice error hidden"></div>
+  <div class="row">
+    <button id="back" class="primary">Go back and attach</button>
+    <button id="send">Send anyway</button>
+  </div>
+  <script src="presend.js"></script>
+</body>
+</html>

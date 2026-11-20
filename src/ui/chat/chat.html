@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MailMind</title>
+  <link rel="stylesheet" href="../common.css">
+  <link rel="stylesheet" href="chat.css">
+</head>
+<body>
+  <div id="app">
+    <header id="top">
+      <img src="../../icons/icon.svg" alt="" width="22" height="22">
+      <strong>MailMind</strong>
+      <span id="model" class="badge" title="Model in use"></span>
+      <span class="spacer"></span>
+      <button id="btn-new" class="ghost small" title="Start a new conversation">New chat</button>
+      <button id="btn-popout" class="ghost small" title="Open in a small window">Pop out</button>
+      <button id="btn-settings" class="ghost small" title="Settings, rules and undo history">Settings</button>
+    </header>
+    <div id="banner" class="hidden"></div>
+    <div id="panes">
+      <div id="chat-col">
+        <main id="log" aria-live="polite">
+          <section id="empty">
+            <h2>Hi! I can help with your email.</h2>
+            <p class="muted">Everything runs on your computer. I'll never delete or move anything without you approving it.</p>
+            <div id="suggestions"></div>
+          </section>
+        </main>
+        <footer id="composer">
+          <div id="attached" class="hidden"></div>
+          <div class="row">
+            <textarea id="input" rows="2" placeholder="Ask anything… e.g. “Find junk in my 2021 emails and help me delete it”"></textarea>
+            <button id="btn-send" class="primary">Send</button>
+          </div>
+          <div class="small muted hint">Enter to send · Shift+Enter for a new line</div>
+        </footer>
+      </div>
+      <aside id="actions" aria-label="Actions">
+        <div id="actions-head">
+          <strong>Actions</strong>
+          <span id="actions-count" class="small muted"></span>
+          <span class="spacer"></span>
+          <button id="btn-clear-actions" class="ghost small" title="Close all review cards">Clear</button>
+        </div>
+        <div id="action-list"></div>
+      </aside>
+    </div>
+  </div>
+  <script src="chat.js"></script>
+</body>
+</html>
