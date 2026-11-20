@@ -19,7 +19,7 @@ MailMind scans 2021, groups the mail by sender, and shows a review list like *"j
 3. **Build the add-on**, or use the `.xpi` already in `artifacts/`:
    ```bash
    npm install
-   npm run package        # → artifacts/mailmind-0.4.0.xpi
+   npm run package        # → artifacts/mailmind-0.5.0.xpi
    ```
 4. In Thunderbird, go to **Tools → Add-ons and Themes → ⚙ → Install Add-on From File…** and pick the `.xpi`.
 5. Open MailMind's settings from the add-on's **Preferences** or the chat's **Settings** button, then click **Test connection & load models**. The default is `gemma4:latest` on `http://localhost:11434/v1`.
@@ -31,7 +31,7 @@ For development, run `npm run build` and load `dist/manifest.json` through **Deb
 
 | Place | What it does |
 |---|---|
-| **MailMind icon** in the left Spaces bar and the main toolbar | Opens the chat. **Pop out** opens the chat in a small window you can keep beside your mail. |
+| **MailMind icon** in the left Spaces bar and the main toolbar | Opens the chat. **Pop out** opens the chat in a small window you can keep beside your mail. **History** lists your previous conversations so you can reopen or delete them; **New chat** keeps the old one there. |
 | **MailMind button** in a message's header toolbar | Summarise, list action items, check for junk or phishing, explain, draft a reply in your style, **summarise the whole conversation**, **find dates & to-dos** and save them as a calendar file (.ics). |
 | **MailMind button** in the compose window | Improve, fix grammar, shorten, notes → email, change tone, custom instructions, review before sending, suggest a subject. |
 | **Right-click** on messages or folders | Ask about the selected emails, find all mail from a sender, find junk in a folder, suggest where to file the emails, **unsubscribe from a sender**, **what am I waiting on?** |
@@ -60,7 +60,11 @@ For development, run `npm run build` and load `dist/manifest.json` through **Deb
   unsubscribing from spam confirms your address.
 - "Summarise this whole thread" / "Add the meeting in this email to my calendar"
 - "Tag the emails from this week" → AI tags (Needs reply, FYI, Receipt, Travel, Newsletter), one approval card per tag
+  plus your own tags. Add them in **Settings → Automation → Add your own tag** (a name and a line saying which emails get it), or click **Suggest tags from my mail** and the AI proposes some for you to edit and add. Nothing is created until you click Add.
 - "Give me my daily briefing"
+- "Suggest some categories for my email" → the AI looks for topics in your recent mail (e.g. *Kids' school*, *Car*)
+  and shows each idea as a card: rename it, untick senders that don't belong, then **Create** or **Not useful**.
+  Then: "show my Kids' school emails from this term", "put coach@club.example in Kids' school".
 
 ## Safety and privacy
 
@@ -70,6 +74,8 @@ For development, run `npm run build` and load `dist/manifest.json` through **Deb
 - **Nothing leaves your computer.** MailMind only connects to the AI server you set. It warns you if that server isn't on your computer or local network. There's no telemetry. The one exception is **Unsubscribe**: when you click it for a sender, MailMind contacts that sender's unsubscribe link (one-click POST after Thunderbird asks your permission for that site, no cookies), opens their page in your browser, or opens an unsubscribe email that you send yourself.
 - **Automation is off by default.** Auto-tagging only touches new mail from the last 2 days, at most 50 messages at a time, and every batch appears under *Recent actions* with Undo. The daily briefing only reads mail.
 - **Junk scores are saved, not acted on.** New mail's senders get an AI junk score as they arrive, and a background scan slowly scores older mail (one month at a time, at most one AI request per minute). It pauses whenever the chat, popups or new-mail automation need the AI, and stops its current request so yours runs right away. A clean-up then reuses these scores instead of asking the AI again. **"👍 Not junk" always overrides a saved score** (and deletes it). Pressing Junk / Not Junk in Thunderbird makes MailMind judge that sender again, and so does writing to them. Scores also expire after 60 days. Both can be switched off, and the scores cleared, in Settings.
+- **Categories.** Every sender gets a built-in category: junk, promo, newsletter, social, notification, security, order update, travel / booking, bills / finance, personal or important. Bills are never suggested for clean-up and always ask before deleting. Recent security codes are protected; ones older than 30 days are fair game.
+- **Smart categories are suggestions.** About once a week (or when you ask) the AI suggests topic categories it notices in your mail. Nothing exists until you approve it, and senders you add or remove yourself are never changed by the AI. Smart categories never change emails or junk scores, and can be switched off or cleared in Settings.
 - **Filter rules** are kept by the add-on and run on new mail, because Thunderbird doesn't let add-ons create its built-in filters. You can switch them off or delete them in Settings.
 
 ## How it works
@@ -81,6 +87,7 @@ src/
     llm.ts                  OpenAI-compatible client (streaming, tool calls, embeddings)
     jsonTools.ts            Compatibility mode for models without native tool calling
     agent.ts                Tool-calling loop (step limit, trims history to fit the context window)
+    conversations.ts        Saved chat conversations (history list)
     tools.ts                Tools the AI can use (read-only tools + tools that only make proposals)
     prompts.ts              System prompts
     mail.ts                 Wrappers around Thunderbird's messenger.* APIs
@@ -88,6 +95,7 @@ src/
     junkScores.ts           Saved AI junk verdicts per sender (new mail, clean-ups); user feedback overrides them
     backfill.ts             Background scan that scores older mail month by month
     aiActivity.ts           Tells the background scan when the AI is busy with something else
+    smartCategories.ts      AI-suggested topic categories, approvals and per-sender placement
     actions.ts              Runs approved actions in batches, plus the undo log
     rules.ts                Filter rules
     filing.ts               Folder suggestions (filing history + AI)

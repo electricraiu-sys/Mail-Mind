@@ -13,6 +13,10 @@ import { eventsCard, followupsCard, subscriptionsCard, digestCard, categorySugge
 import { getSuggestions, type CategorySuggestion } from '../../core/smartCategories';
 import type { Digest } from '../../core/digest';
 import { settleBlock, mergeBlock } from '../../core/turns';
+import {
+  newConversation, loadConversation, saveConversation, listConversations, deleteConversation,
+  getCurrentId, setCurrentId, visibleMessages, visibleUserText, type Conversation,
+} from '../../core/conversations';
 
 const log = $('#log');
 const input = $('#input') as HTMLTextAreaElement;
@@ -24,11 +28,13 @@ const app = $('#app');
 const actionList = $('#action-list');
 const actionsCount = $('#actions-count');
 
-const HISTORY_KEY = 'chatHistory';
-const MAX_SAVED = 80;
+const historyPanel = $('#history');
+const historyList = $('#history-list');
+const historyFilter = $('#history-filter') as HTMLInputElement;
 
 let settings: Settings;
-let history: ChatMessage[] = [];
+/** The conversation on screen. Requests keep a reference to theirs, so they save to the right one even after switching. */
+let current: Conversation = newConversation();
 /** Requests that are running right now. You can send a new one while others are still working. */
 interface Task {
   id: number;
@@ -271,9 +277,6 @@ async function buildUserContent(text: string): Promise<string> {
   return parts.join('\n\n');
 }
 
-/** Abort reason for "New chat": that request's messages are thrown away instead of merged back. */
-const NEW_CHAT = 'new-chat';
-
 async function send(text: string) {
   text = text.trim();
   if (!text || tasks.size >= MAX_PARALLEL) return;
@@ -297,8 +300,9 @@ async function send(text: string) {
   const toLog = (node: HTMLElement) => appendToLog(node, false, turn);
 
   // Runs on its own copy of the conversation; merged back as one block when it ends (see core/turns.ts).
-  const baseLen = history.length;
-  const own: ChatMessage[] = [...history, userMsg];
+  const conv = current;
+  const baseLen = conv.messages.length;
+  const own: ChatMessage[] = [...conv.messages, userMsg];
   const llm = new LlmClient(settings);
 
   let bubble: ReturnType<typeof addAssistantBubble> | null = null;
@@ -409,43 +413,129 @@ async function send(text: string) {
     turnHead.remove();
     tasks.delete(task.id);
     updateComposer();
-    if (task.controller.signal.reason !== NEW_CHAT) {
-      mergeBlock(history, settleBlock(own.slice(baseLen), endNote));
-      await saveHistory();
-    }
+    // Merged into the conversation it was asked in, even if another one is on screen now.
+    mergeBlock(conv.messages, settleBlock(own.slice(baseLen), endNote));
+    await saveConversation(conv);
+    if (conv === current) await setCurrentId(conv.id);
+    if (!historyPanel.classList.contains('hidden')) renderHistoryList();
     if (!tasks.size) input.focus();
   }
 }
 
-async function saveHistory() {
-  let h = history.slice(-MAX_SAVED);
-  while (h.length && h[0].role !== 'user') h = h.slice(1);
-  await messenger.storage.local.set({ [HISTORY_KEY]: h });
-}
-
-async function loadHistory() {
-  const s = await messenger.storage.local.get(HISTORY_KEY);
-  history = (s?.[HISTORY_KEY] as ChatMessage[]) ?? [];
-  const visible = history.filter((m) => (m.role === 'user' && !m.content?.startsWith('[TOOL RESULT')) || (m.role === 'assistant' && m.content && !m.tool_calls));
-  if (!visible.length) return;
+/** Shows a saved conversation's questions and answers in the log. */
+function renderConversation(conv: Conversation) {
+  log.replaceChildren(empty);
+  const visible = visibleMessages(conv.messages);
+  if (!visible.length) {
+    empty.classList.remove('hidden');
+    return;
+  }
   hideEmpty();
   log.append(el('div', { class: 'msg note' }, 'Earlier conversation (review cards aren’t kept after closing)'));
   for (const m of visible.slice(-30)) {
-    if (m.role === 'user') addUserBubble((m.content ?? '').replace(/^\[(Since my last message|I have selected)[\s\S]*?\]\n\n/g, ''));
+    if (m.role === 'user') addUserBubble(visibleUserText(m.content));
     else addAssistantBubble(m.content ?? '');
   }
+  scrollDown(true);
 }
 
-async function newChat() {
-  for (const t of tasks.values()) t.controller.abort(NEW_CHAT);
-  history = [];
+/**
+ * Leaves the conversation on screen (it stays saved) and shows another one, or a fresh one.
+ * Running requests are stopped; what they got done is still saved to their own conversation.
+ */
+async function switchTo(conv: Conversation) {
+  for (const t of tasks.values()) t.controller.abort();
+  current = conv;
   pendingNotes = [];
   attachedIds = [];
   renderAttached();
-  await messenger.storage.local.remove(HISTORY_KEY);
-  log.replaceChildren(empty);
-  empty.classList.remove('hidden');
   clearActions();
+  await setCurrentId(conv.messages.length ? conv.id : null);
+  renderConversation(conv);
+  input.focus();
+}
+
+async function newChat() {
+  closeHistory();
+  if (!current.messages.length && !tasks.size) return input.focus();
+  await switchTo(newConversation());
+}
+
+// ---------- conversation history ----------
+function relativeTime(t: number): string {
+  const d = new Date(t);
+  const now = new Date();
+  const days = Math.floor((new Date(now.toDateString()).getTime() - new Date(d.toDateString()).getTime()) / 86_400_000);
+  const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  if (days <= 0) return time;
+  if (days === 1) return `Yesterday ${time}`;
+  if (days < 7) return d.toLocaleDateString(undefined, { weekday: 'long' });
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
+}
+
+async function renderHistoryList() {
+  const q = historyFilter.value.trim().toLowerCase();
+  const all = await listConversations();
+  const list = q ? all.filter((c) => c.title.toLowerCase().includes(q)) : all;
+  historyList.replaceChildren();
+  if (!list.length) {
+    historyList.append(el('div', { class: 'small muted history-empty' }, all.length ? 'No conversations match.' : 'No saved conversations yet.'));
+    return;
+  }
+  for (const c of list) {
+    const del = el('button', { class: 'ghost small history-del', title: 'Delete this conversation' }, '✕');
+    let armed = false;
+    del.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!armed) {
+        armed = true;
+        del.textContent = 'Delete?';
+        del.classList.add('danger');
+        setTimeout(() => {
+          armed = false;
+          del.textContent = '✕';
+          del.classList.remove('danger');
+        }, 4000);
+        return;
+      }
+      await deleteConversation(c.id);
+      if (c.id === current.id) await switchTo(newConversation());
+      renderHistoryList();
+    });
+    const item = el(
+      'div',
+      { class: `history-item${c.id === current.id ? ' current' : ''}`, tabindex: '0', role: 'button', title: c.title },
+      el('div', { class: 'history-main' }, el('div', { class: 'history-title' }, c.title), el('div', { class: 'small muted' }, `${relativeTime(c.updated)} · ${c.count} message${c.count === 1 ? '' : 's'}`)),
+      del,
+    );
+    const open = async () => {
+      closeHistory();
+      if (c.id === current.id) return;
+      const conv = await loadConversation(c.id);
+      if (conv) await switchTo(conv);
+    };
+    item.addEventListener('click', open);
+    item.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        open();
+      }
+    });
+    historyList.append(item);
+  }
+}
+
+function openHistory() {
+  historyPanel.classList.remove('hidden');
+  $('#btn-history').classList.add('active');
+  historyFilter.value = '';
+  renderHistoryList();
+  historyFilter.focus();
+}
+
+function closeHistory() {
+  historyPanel.classList.add('hidden');
+  $('#btn-history').classList.remove('active');
 }
 
 /** Smart-category ideas already shown in this page, so each appears once. */
@@ -499,6 +589,19 @@ input.addEventListener('keydown', (e) => {
   }
 });
 $('#btn-new').addEventListener('click', newChat);
+$('#btn-history').addEventListener('click', () => (historyPanel.classList.contains('hidden') ? openHistory() : closeHistory()));
+historyFilter.addEventListener('input', () => renderHistoryList());
+historyPanel.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeHistory();
+    input.focus();
+  }
+});
+document.addEventListener('click', (e) => {
+  const t = e.target as Node;
+  if (!historyPanel.classList.contains('hidden') && !historyPanel.contains(t) && !$('#btn-history').contains(t)) closeHistory();
+});
 $('#btn-clear-actions').addEventListener('click', clearActions);
 $('#btn-settings').addEventListener('click', () => messenger.runtime.openOptionsPage());
 $('#btn-popout').addEventListener('click', async () => {
@@ -519,7 +622,13 @@ messenger.storage.onChanged.addListener((changes: any, area: string) => {
 
 (async () => {
   settings = await getSettings();
-  await loadHistory();
+  await listConversations(); // moves a conversation saved by an older version into the list
+  const id = await getCurrentId();
+  const saved = id ? await loadConversation(id) : null;
+  if (saved) {
+    current = saved;
+    renderConversation(saved);
+  }
   checkConnection();
   consumePendingContext();
   showPendingSuggestions();

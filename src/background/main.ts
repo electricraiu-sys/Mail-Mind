@@ -10,7 +10,7 @@ import { groupBySender, scoreGroups } from '../core/triage';
 import { placeSenders } from '../core/smartCategories';
 import { getAiActivity, isAiBusy, onAiActivity } from '../core/aiActivity';
 import { splitComposeBody, htmlToText } from '../core/text';
-import { autoTagNew } from '../core/autotag';
+import { activeTags, allTags, autoTagNew, recentForTagIdeas, suggestNewTags } from '../core/autotag';
 import { buildDigest, digestNotificationText, nextOccurrence, shouldCatchUp, DIGEST_KEY, DIGEST_AT_KEY } from '../core/digest';
 
 const CHAT_URL = 'ui/chat/chat.html';
@@ -132,7 +132,7 @@ messenger.messages.onNewMailReceived.addListener(async (folder: any, messageList
     // Tag first: tags travel with a message when a rule then moves it.
     if (s.autoTag && llm) {
       try {
-        const tagged = await autoTagNew(headers, llm, s.autoTagKeys);
+        const tagged = await autoTagNew(headers, llm, activeTags(s), Date.now(), allTags(s).map((t) => t.key));
         if (tagged) console.info(`MailMind auto-tagged ${tagged} new message(s)`);
       } catch (e) {
         console.warn('MailMind: auto-tag failed', e);
@@ -255,9 +255,19 @@ messenger.runtime.onMessage.addListener((msg: any) => {
     );
   }
   if (msg?.type === 'openChat') return openChat().then(() => ({ ok: true }));
+  if (msg?.type === 'suggestTags') return suggestTagsForOptions().catch((e: Error) => ({ error: e.message }));
   if (msg?.type === 'runDigest') return runDigest().then(() => ({ ok: true }));
   return undefined;
 });
+
+// ---------- Tag ideas (Settings → "Suggest tags") ----------
+async function suggestTagsForOptions() {
+  const s = await getSettings();
+  if (!s.model) return { error: 'Choose a model first.' };
+  const llm = new LlmClient({ baseUrl: s.baseUrl, apiKey: s.apiKey, model: s.model, temperature: 0.2 });
+  const recent = await recentForTagIdeas();
+  return { suggestions: await suggestNewTags(llm, recent, allTags(s)), scanned: recent.length };
+}
 
 // ---------- Daily digest ----------
 const DIGEST_ALARM = 'mailmind-digest';

@@ -94,11 +94,39 @@
       <h2>Automation <span class="muted small">(tagging and the briefing are off by default)</span></h2>
       <label class="row"><input id="autoTag" type="checkbox"> Tag new mail with the AI</label>
       <p class="muted small">New emails (from the last 2 days, up to 50 at a time) get one MailMind tag. Every batch shows up under Recent actions and can be undone.</p>
-      <div id="tagKeys" class="row small"></div>
+      <div id="tagKeys" class="row small" style="flex-wrap:wrap"></div>
+      <details id="tag-add" style="margin-top:8px">
+        <summary class="small">Add your own tag</summary>
+        <div class="grid2" style="margin-top:8px">
+          <div class="field">
+            <label for="newTagLabel">Name</label>
+            <input id="newTagLabel" type="text" maxlength="30" list="tbTags" placeholder="e.g. Kids' school">
+            <datalist id="tbTags"></datalist>
+          </div>
+          <div class="field">
+            <label for="newTagColor">Colour</label>
+            <input id="newTagColor" type="color" value="#3A86FF" style="width:60px">
+          </div>
+        </div>
+        <div class="field">
+          <label for="newTagHint">Which emails get it? (the AI reads this)</label>
+          <input id="newTagHint" type="text" maxlength="200" placeholder="e.g. anything from the kids' school or teachers: newsletters, trips, homework, parents' evenings">
+        </div>
+        <div class="row">
+          <button id="btn-add-tag">Add tag</button>
+          <span id="tag-add-result" class="small"></span>
+        </div>
+        <p class="muted small">If you pick the name of a tag you already have in Thunderbird, MailMind uses that tag.</p>
+      </details>
+      <div class="row" style="margin-top:8px">
+        <button id="btn-suggest-tags">Suggest tags from my mail</button>
+        <span id="tag-suggest-result" class="small"></span>
+      </div>
+      <div id="tag-suggestions"></div>
       <h3 style="margin-top:16px">Junk scores</h3>
       <label class="row"><input id="junkScoreNewMail" type="checkbox"> Give new mail a junk score as it arrives</label>
       <label class="row"><input id="junkBackfill" type="checkbox"> Score my older mail in the background</label>
-      <p class="muted small">Saves the AI’s opinion of each sender so clean-ups don’t ask about them again. Read-only: no email is changed. The background scan works back one month at a time and pauses whenever you use the chat or popups. “Not junk” always overrides a saved score, and pressing Junk / Not Junk in Thunderbird makes MailMind judge that sender again.</p>
+      <p class="muted small">Saves the AI’s opinion of each sender so clean-ups don’t ask about them again. Read-only: no email is changed. The background scan works back one month at a time and pauses whenever you use the chat or popups. “Not junk” and “👎 Junk” always override a saved score, and pressing Junk / Not Junk in Thunderbird makes MailMind judge that sender again.</p>
       <p id="junk-status" class="small"></p>
       <h3 style="margin-top:16px">Smart categories</h3>
       <label class="row"><input id="smartCategories" type="checkbox"> Let the AI suggest topic categories and sort senders into the ones I approve</label>
@@ -140,6 +168,12 @@
     </section>
 
     <section>
+      <h2>Junk</h2>
+      <p class="muted small">Senders you marked “👎 Junk” in the clean-up review. They always show up as junk, the AI uses them as examples of mail you don't want, and other senders from the same company lean towards junk. Marking a sender here never moves or deletes any email.</p>
+      <div id="junked"></div>
+    </section>
+
+    <section>
       <h2>Recent actions</h2>
       <p class="muted small">Everything MailMind changed. Deleted emails are in Trash and can be restored here.</p>
       <div id="undo"></div>
@@ -148,7 +182,7 @@
     <section>
       <h2>Data</h2>
       <div class="row">
-        <button id="btn-clear-chat">Clear chat history</button>
+        <button id="btn-clear-chat">Clear all conversations</button>
         <button id="btn-clear-emb">Clear search index</button>
         <button id="btn-clear-junk">Clear saved junk scores</button>
         <button id="btn-clear-smart">Clear smart categories</button>

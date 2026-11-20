@@ -1,7 +1,7 @@
 import { el, confirmButton, plural, progressBar } from '../dom';
 import type { TriageResult, SenderGroup, Caution } from '../../core/triage';
-import { isLikelyJunk, markKept, cautionsFor, senderCautions, importanceOf } from '../../core/triage';
-import { keepSender, unkeepSender } from '../../core/feedback';
+import { isLikelyJunk, markKept, markUserJunk, cautionsFor, senderCautions, importanceOf } from '../../core/triage';
+import { keepSender, unkeepSender, markJunkSender, unmarkJunkSender } from '../../core/feedback';
 import type { FilingResult } from '../../core/filing';
 import type { Proposal, Draft, RuleDraft } from '../../core/tools';
 import type { ActionKind, MailFolder } from '../../core/types';
@@ -11,7 +11,8 @@ import { addRule, type RuleActionKind } from '../../core/rules';
 import { collectMessages, folderLabel, listFolders, openMessage, hasUse, NOT_A_DESTINATION } from '../../core/mail';
 import { parseAddress, formatDate } from '../../core/text';
 import { openNewDraft, openReplyDraft } from '../composeHelpers';
-import { ensureTags, tagLabel, TAG_KEYS } from '../../core/autotag';
+import { allTags, ensureTags, tagLabel } from '../../core/autotag';
+import { getSettings } from '../../core/settings';
 
 export interface CardDeps {
   /** Tells the AI (on the next turn) what the user did with a card. */
@@ -195,7 +196,7 @@ export function senderReviewCard(result: TriageResult, deps: CardDeps): SenderRe
     const ids = selectedIds();
     const senders = selectedSenders();
     summary.textContent = ids.length ? `Selected: ${plural(senders.length, 'sender')}, ${plural(ids.length, 'email')}` : 'Tick senders (or individual emails) to act on them.';
-    for (const b of [...actionButtons, keepBtn]) b.disabled = ids.length === 0;
+    for (const b of [...actionButtons, keepBtn, teachBtn]) b.disabled = ids.length === 0;
     const vis = visible();
     const allOn = vis.length > 0 && vis.every((g) => selected.get(g.address)?.size === liveMessages(g).length);
     toggleAll.checked = allOn;
@@ -229,10 +230,48 @@ export function senderReviewCard(result: TriageResult, deps: CardDeps): SenderRe
     updateSummary();
   }
 
+  const remember = (g: SenderGroup) => {
+    // Only the state before the user's first verdict, so "Junk" then "Not junk" then undo goes back to the AI's view.
+    if (!g.userKept && !g.userJunk) beforeKeep.set(g.address, { score: g.score, verdict: g.verdict, reason: g.reason, source: g.source, confidence: g.confidence });
+  };
+
+  /** "👎 Junk": teaches MailMind this sender is unwanted. Moves no email; the selection stays so it can be deleted next. */
+  async function teachJunk(groups: SenderGroup[]) {
+    groups = groups.filter((g) => !g.userJunk);
+    for (const g of groups) {
+      remember(g);
+      markUserJunk(g);
+      g.handled = true;
+    }
+    render();
+    try {
+      for (const g of groups) await markJunkSender({ address: g.address, name: g.name, sample: g.subjects[0] });
+      const names = groups.map((g) => g.address);
+      if (names.length) deps.note(`User marked ${names.slice(0, 10).join(', ')}${names.length > 10 ? '…' : ''} as JUNK. MailMind will remember this and treat similar mail as unwanted in future clean-ups.`);
+    } catch (e) {
+      status.error(e);
+    }
+  }
+
+  async function unteachJunk(g: SenderGroup) {
+    const prev = beforeKeep.get(g.address);
+    await unmarkJunkSender(g.address);
+    g.userJunk = false;
+    if (prev) Object.assign(g, prev);
+    else {
+      g.score = 0.45;
+      g.reason = 'No longer marked as junk';
+      g.source = 'heuristic';
+    }
+    beforeKeep.delete(g.address);
+    render();
+    deps.note(`User removed ${g.address} from their junk list.`);
+  }
+
   async function keep(groups: SenderGroup[]) {
     for (const g of groups) {
       if (g.userKept) continue;
-      beforeKeep.set(g.address, { score: g.score, verdict: g.verdict, reason: g.reason, source: g.source, confidence: g.confidence });
+      remember(g);
       markKept(g);
       g.handled = true;
       selected.delete(g.address);
@@ -286,9 +325,17 @@ export function senderReviewCard(result: TriageResult, deps: CardDeps): SenderRe
       g.userKept ? 'Undo keep' : '👍 Not junk',
     );
     keepToggle.addEventListener('click', () => (g.userKept ? unkeep(g) : keep([g])));
+    const junkToggle = el(
+      'button',
+      { class: 'small ghost', title: g.userJunk ? 'Forget that this sender is junk' : 'Junk — teach MailMind this sender is unwanted (no email is moved)' },
+      g.userJunk ? 'Undo junk' : '👎 Junk',
+    );
+    junkToggle.addEventListener('click', () => (g.userJunk ? unteachJunk(g) : teachJunk([g])));
     const badge = g.userKept
       ? el('span', { class: 'badge personal' }, 'not junk')
-      : el('span', { class: `badge ${g.verdict}` }, VERDICT_LABELS[g.verdict] ?? g.verdict);
+      : g.userJunk
+        ? el('span', { class: 'badge junk', title: 'You marked this sender as junk' }, 'junk (you)')
+        : el('span', { class: `badge ${g.verdict}` }, VERDICT_LABELS[g.verdict] ?? g.verdict);
     const kinds = [...new Set(live.map((m) => (m.flagged ? 'flagged by you' : m.importantKind)).filter(Boolean))] as string[];
     const cautionText = [...senderCautions(g), ...kinds];
     const caution = cautionText.length
@@ -313,6 +360,7 @@ export function senderReviewCard(result: TriageResult, deps: CardDeps): SenderRe
         ),
         el('span', { class: 'score', title: 'Likelihood this is unwanted' }, `${Math.round(g.score * 100)}%`),
         keepToggle,
+        junkToggle,
         toggle,
       ),
     );
@@ -344,7 +392,9 @@ export function senderReviewCard(result: TriageResult, deps: CardDeps): SenderRe
             el('span', { class: `subj${m.read ? '' : ' unread'}` }, m.subject),
             why
               ? el('span', { class: 'small caution', title: `May be important: ${why}` }, `⚠ ${why}`)
-              : m.timely && !m.timely.upcoming
+              : m.expiredCode
+                ? el('span', { class: 'small muted', title: 'One-time codes stop working within minutes; this one is over a week old' }, '⏱ expired login code')
+                : m.timely && !m.timely.upcoming
                 ? el('span', { class: 'small muted', title: 'This notice is about a date that has passed' }, `⏱ ${m.timely.label}`)
                 : null,
             open,
@@ -540,6 +590,8 @@ export function senderReviewCard(result: TriageResult, deps: CardDeps): SenderRe
   const actionButtons = [deleteBtn, moveBtn, archiveBtn, junkBtn, readBtn];
   const keepBtn = el('button', { title: 'Remember these senders as wanted mail' }, '👍 Not junk');
   keepBtn.addEventListener('click', () => keep(selectedSenders().map((a) => result.groups.find((g) => g.address === a)!).filter(Boolean)));
+  const teachBtn = el('button', { title: 'Teach MailMind these senders are unwanted (no email is moved)' }, '👎 Junk');
+  teachBtn.addEventListener('click', () => teachJunk(selectedSenders().map((a) => result.groups.find((g) => g.address === a)!).filter(Boolean)));
 
   toggleAll.addEventListener('change', () => {
     for (const g of visible()) setSender(g, toggleAll.checked);
@@ -559,7 +611,7 @@ export function senderReviewCard(result: TriageResult, deps: CardDeps): SenderRe
       'div',
       { class: 'card-actions' },
       el('div', { class: 'row' }, summary),
-      el('div', { class: 'row' }, deleteBtn, moveSel, moveBtn, archiveBtn, junkBtn, readBtn, keepBtn),
+      el('div', { class: 'row' }, deleteBtn, moveSel, moveBtn, archiveBtn, junkBtn, readBtn, keepBtn, teachBtn),
       cautionNode,
       el(
         'div',
@@ -632,7 +684,7 @@ export function proposalCard(p: Proposal, deps: CardDeps): HTMLElement {
     approve.disabled = reject.disabled = true;
     const onProgress = status.working(`${ACTION_LABELS[p.kind]}…`);
     try {
-      if (p.kind === 'tag' && p.tag && TAG_KEYS.includes(p.tag)) await ensureTags([p.tag]);
+      if (p.kind === 'tag' && p.tag) await ensureTags([p.tag], allTags(await getSettings()));
       const { entry, skipped } = await executeAction(p.kind, [...chosen], { folderId: p.folderId, tag: p.tag, onProgress, source: 'Chat proposal' });
       status.done(entry, skipped);
       deps.note(`User approved: ${entry.label}.`);

@@ -1,7 +1,7 @@
 import type { MessageHeader, Verdict } from './types';
 import { VERDICTS } from './types';
 import type { LlmClient } from './llm';
-import { getKeptSenders, indexKept, keptPromptHint, type KeptSender } from './feedback';
+import { feedbackPromptHint, getJunkSenders, getKeptSenders, indexKept, type KeptSender } from './feedback';
 import { getRawHeaders } from './mail';
 import { applyAiVerdict, classifyWithAi, groupBySender, mapLimit, scoreGroups, type SenderGroup } from './triage';
 
@@ -10,7 +10,7 @@ import { applyAiVerdict, classifyWithAi, groupBySender, mapLimit, scoreGroups, t
  *
  * Only the model's own opinion is stored. Everything the user can change is read fresh on every clean-up and
  * always wins over a saved verdict:
- *  - "Not junk" in MailMind (feedback.ts): the sender is kept, and its saved verdict is deleted;
+ *  - "Not junk" / "Junk" in MailMind (feedback.ts): the sender is kept or junked, and its saved verdict is deleted;
  *  - "Not junk" / "Junk" in Thunderbird: the saved verdict for that sender is deleted (see forgetSenders);
  *  - writing to the sender, flagging their mail, opening it: heuristics recompute these on every run.
  * A saved verdict also goes stale after VERDICT_TTL_MS, or once the sender has sent far more mail than the
@@ -64,7 +64,7 @@ function update(fn: (map: Record<string, SavedVerdict>) => boolean): Promise<voi
 
 /** Saves the model's verdicts for groups it just classified (groups without `ai` are skipped). */
 export function saveVerdicts(groups: SenderGroup[], now = Date.now()): Promise<void> {
-  const fresh = groups.filter((g) => g.ai && !g.userKept);
+  const fresh = groups.filter((g) => g.ai && !g.userKept && !g.userJunk);
   if (!fresh.length) return Promise.resolve();
   return update((map) => {
     for (const g of fresh) map[g.address] = { ...g.ai!, count: Math.max(g.count, map[g.address]?.count ?? 0), at: now, v: SCORES_VERSION };
@@ -121,9 +121,12 @@ export async function scoreNewMail(
   const sentTo = deps.sentTo ?? new Set<string>();
   const kept = await getKeptSenders().catch(() => []);
   const keptIdx = indexKept(kept);
+  const junkIdx = indexKept(await getJunkSenders().catch(() => []));
   const saved = await getSavedVerdicts();
 
-  const groups = groupBySender(headers, deps.myAddresses ?? []).filter((g) => !keptIdx.addresses.has(g.address) && !sentTo.has(g.address) && !isFresh(saved[g.address], g.count, now));
+  const groups = groupBySender(headers, deps.myAddresses ?? []).filter(
+    (g) => !keptIdx.addresses.has(g.address) && !junkIdx.addresses.has(g.address) && !sentTo.has(g.address) && !isFresh(saved[g.address], g.count, now),
+  );
   return scoreSenders(groups.slice(0, deps.maxSenders ?? NEW_MAIL_MAX_SENDERS), llm, kept, deps.signal, now);
 }
 
@@ -144,8 +147,9 @@ export async function scoreSenders(
     g.bulk = (hdrs['precedence'] ?? []).some((v) => /bulk|list/i.test(v));
   });
   scoreGroups(todo);
+  const junk = await getJunkSenders().catch(() => []);
   try {
-    await classifyWithAi(llm, todo, { signal, hint: keptPromptHint(kept) });
+    await classifyWithAi(llm, todo, { signal, hint: feedbackPromptHint(kept, junk) });
   } finally {
     await saveVerdicts(todo, now);
   }

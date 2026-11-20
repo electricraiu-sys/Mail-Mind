@@ -32,8 +32,12 @@ describe('built-in categories', () => {
 
     const old = one(mail('Acme <security@acme.example>', subjects, daysAgo(200)));
     expect(old.verdict).toBe('security');
-    expect(old.reason).toMatch(/old security codes/);
+    // Mostly one-time codes, so the stricter 7-day rule for expired codes applies.
+    expect(old.reason).toMatch(/expired one-time login codes/);
     expect(old.score).toBeGreaterThan(recent.score);
+    // Sign-in alerts (not codes) still use the 30-day rule.
+    const alerts = one(mail('Acme <security@acme.example>', ['New sign-in to your account', 'New sign-in to your account'], daysAgo(200)));
+    expect(alerts.reason).toMatch(/old security codes/);
     expect(cautionsFor([old], old.messages.map((m) => m.id))).toEqual([]);
   });
 

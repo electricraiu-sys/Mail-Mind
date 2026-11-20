@@ -31,6 +31,28 @@ html, body { height: 100%; }
   padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--bg);
   position: sticky; top: 0; z-index: 2;
 }
+#top button.active { border-color: var(--border); background: var(--bg-soft); }
+
+/* Previous conversations: a drop-down under the header, over the chat. */
+#app { position: relative; }
+#history {
+  position: absolute; top: 44px; right: 14px; z-index: 5;
+  width: min(380px, calc(100% - 28px)); max-height: min(70vh, 560px);
+  display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 6px 24px rgba(20, 30, 50, 0.18);
+}
+#history-filter { width: 100%; }
+#history-list { overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 2px; }
+.history-item { display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-radius: 7px; cursor: pointer; }
+.history-item:hover, .history-item:focus-visible { background: var(--bg-soft); outline: none; }
+.history-item.current { background: var(--accent-soft); }
+.history-main { flex: 1; min-width: 0; }
+.history-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-del { visibility: hidden; flex: none; }
+.history-item:hover .history-del, .history-item:focus-within .history-del, .history-del.danger { visibility: visible; }
+.history-empty { padding: 10px 8px; text-align: center; }
+
 #banner { margin: 8px 14px 0; }
 #banner .notice { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 

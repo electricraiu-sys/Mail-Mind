@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "MailMind – Local AI Email Assistant",
   "short_name": "MailMind",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "description": "Chat with a local AI (Ollama, LM Studio, llama.cpp…) to read, write, review, sort, filter, file and clean up your email. Nothing leaves your computer.",
   "author": "MailMind",
   "browser_specific_settings": {

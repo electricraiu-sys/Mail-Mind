@@ -14,10 +14,15 @@
       <strong>MailMind</strong>
       <span id="model" class="badge" title="Model in use"></span>
       <span class="spacer"></span>
-      <button id="btn-new" class="ghost small" title="Start a new conversation">New chat</button>
+      <button id="btn-new" class="ghost small" title="Start a new conversation (this one stays in History)">New chat</button>
+      <button id="btn-history" class="ghost small" title="Previous conversations" aria-controls="history">History</button>
       <button id="btn-popout" class="ghost small" title="Open in a small window">Pop out</button>
       <button id="btn-settings" class="ghost small" title="Settings, rules and undo history">Settings</button>
     </header>
+    <section id="history" class="hidden" aria-label="Previous conversations">
+      <input id="history-filter" type="text" placeholder="Search conversations…" autocomplete="off">
+      <div id="history-list"></div>
+    </section>
     <div id="banner" class="hidden"></div>
     <div id="panes">
       <div id="chat-col">

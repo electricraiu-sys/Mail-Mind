@@ -3,7 +3,7 @@ import type { LlmClient } from './llm';
 import type { Settings } from './settings';
 import { collectMessages, getBodyText, getSentRecipients, inboxFolders } from './mail';
 import { findFollowups, type FollowupItem } from './followups';
-import { TAGS } from './autotag';
+import { allTags, type TagDef } from './autotag';
 import { parseAddress, stripQuotedText, truncate } from './text';
 
 /** Daily briefing: unread overview, important mail with one-line summaries, and due follow-ups. */
@@ -84,7 +84,7 @@ async function summarize(llm: LlmClient, items: MessageHeader[], signal?: AbortS
 
 const toFollowup = (it: FollowupItem): DigestFollowup => ({ id: it.header.id, person: it.counterpart, subject: it.header.subject, ageDays: it.ageDays });
 
-export async function buildDigest(llm: LlmClient | null, settings: Pick<Settings, 'followupDays' | 'followupLookbackDays'>, since: number, now = new Date(), signal?: AbortSignal): Promise<Digest> {
+export async function buildDigest(llm: LlmClient | null, settings: Pick<Settings, 'followupDays' | 'followupLookbackDays'> & { customTags?: TagDef[] }, since: number, now = new Date(), signal?: AbortSignal): Promise<Digest> {
   const fromDate = new Date(since).toISOString().slice(0, 10);
   const unread: MessageHeader[] = [];
   for (const f of await inboxFolders()) {
@@ -93,7 +93,7 @@ export async function buildDigest(llm: LlmClient | null, settings: Pick<Settings
   }
   unread.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-  const byTag = TAGS.map((t) => ({ label: t.label, count: unread.filter((h) => h.tags?.includes(t.key)).length })).filter((x) => x.count);
+  const byTag = allTags(settings).map((t) => ({ label: t.label, count: unread.filter((h) => h.tags?.includes(t.key)).length })).filter((x) => x.count);
 
   const contacts = await getSentRecipients().catch(() => new Set<string>());
   const whyImportant = (h: MessageHeader): string | null => {

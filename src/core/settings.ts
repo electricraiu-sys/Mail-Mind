@@ -1,3 +1,5 @@
+import type { TagDef } from './autotag';
+
 export type ToolMode = 'auto' | 'native' | 'json';
 
 export interface Settings {
@@ -18,6 +20,8 @@ export interface Settings {
   autoTag: boolean;
   /** Tag keys auto-tagging may use (empty = all). */
   autoTagKeys: string[];
+  /** The user's own tags (added by hand or accepted from the AI's suggestions). */
+  customTags: TagDef[];
   /** Give new mail's senders a saved AI junk score as it arrives (read-only). */
   junkScoreNewMail: boolean;
   /** Slowly score older mail in the background, pausing whenever the AI is needed for anything else. */
@@ -46,6 +50,7 @@ export const DEFAULT_SETTINGS: Settings = {
   learnStyleFromSent: true,
   autoTag: false,
   autoTagKeys: [],
+  customTags: [],
   junkScoreNewMail: true,
   junkBackfill: true,
   smartCategories: true,

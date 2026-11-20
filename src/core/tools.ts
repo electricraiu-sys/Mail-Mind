@@ -26,7 +26,7 @@ import { getThread, threadBlock } from './thread';
 import { extractEvents, type Extracted } from './events';
 import { findFollowups, summarizeFollowups, type FollowupResult } from './followups';
 import { findSubscriptions, summarizeSubscriptions, type SubscriptionResult } from './unsubscribe';
-import { classifyMany, tagLabel } from './autotag';
+import { activeTags, allTags, classifyMany, tagLabel } from './autotag';
 import { buildDigest, summarizeDigest, type Digest } from './digest';
 import { scoreGroups } from './triage';
 import { applySavedVerdicts, getSavedVerdicts } from './junkScores';
@@ -578,7 +578,7 @@ export function createTools(deps: ToolDeps): ToolHandler[] {
 
     tool(
       'suggest_tags',
-      'Have the AI tag a set of emails (Needs reply, FYI, Receipt, Travel, Newsletter). Shows one approval card per tag; nothing is tagged until the user approves.',
+      'Have the AI tag a set of emails with the user\'s tags (Needs reply, FYI, Receipt, Travel, Newsletter, plus any they added in Settings). Shows one approval card per tag; nothing is tagged until the user approves.',
       { resultSetId: { type: 'string' }, messageIds: { type: 'array', items: { type: 'number' } } },
       [],
       async (a, signal) => {
@@ -587,7 +587,8 @@ export function createTools(deps: ToolDeps): ToolHandler[] {
         const ids = set ? set.ids : Array.isArray(a.messageIds) ? a.messageIds.map(Number) : [];
         if (!ids.length) return 'ERROR: provide resultSetId or messageIds.';
         const headers = await getHeaders(ids.slice(0, 100));
-        const byTag = await classifyMany(llm, headers, settings.autoTagKeys.length ? settings.autoTagKeys : undefined, {
+        const byTag = await classifyMany(llm, headers, activeTags(settings), {
+          skipKeys: allTags(settings).map((t) => t.key),
           signal,
           onProgress: (d, t) => ui.progress(`Tagging… ${d}/${t}`, d / t),
         });

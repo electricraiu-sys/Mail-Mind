@@ -1,5 +1,5 @@
 import type { LlmClient } from './llm';
-import { getKeptSenders, indexKept } from './feedback';
+import { getJunkSenders, getKeptSenders, indexKept } from './feedback';
 import { collectMessages, getMyAddresses, hasUse } from './mail';
 import { groupBySender, scoreGroups } from './triage';
 import { applySavedVerdicts, getSavedVerdicts, isFresh, scoreSenders, VERDICT_TTL_MS } from './junkScores';
@@ -97,14 +97,15 @@ export async function runBackfillStep(deps: {
     { fromDate: state.month, toDate: state.month },
     { signal: deps.signal, deadline: now + QUERY_MS, filter: (h) => !hasUse(h.folder, ...SKIP_FOLDERS) },
   );
-  const [mine, kept, saved] = await Promise.all([getMyAddresses(), getKeptSenders().catch(() => []), getSavedVerdicts()]);
+  const [mine, kept, junk, saved] = await Promise.all([getMyAddresses(), getKeptSenders().catch(() => []), getJunkSenders().catch(() => []), getSavedVerdicts()]);
   const keptIdx = indexKept(kept);
+  const junkIdx = indexKept(junk);
   const failed = new Set(state.failed);
   const sentTo = deps.sentTo ?? new Set<string>();
   const groups = groupBySender(headers, mine, now);
   const todo = scoreJunk
     ? groups.filter(
-        (g) => !keptIdx.addresses.has(g.address) && !sentTo.has(g.address) && !failed.has(g.address) && !isFresh(saved[g.address], g.count, now),
+        (g) => !keptIdx.addresses.has(g.address) && !junkIdx.addresses.has(g.address) && !sentTo.has(g.address) && !failed.has(g.address) && !isFresh(saved[g.address], g.count, now),
       )
     : [];
 

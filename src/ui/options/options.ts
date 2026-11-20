@@ -3,7 +3,7 @@ import { getSettings, saveSettings, isLocalUrl, originPattern, type Settings } f
 import { LlmClient, describeLlmError } from '../../core/llm';
 import { getRules, updateRule, deleteRule } from '../../core/rules';
 import { getUndoLog, undo } from '../../core/actions';
-import { getKeptSenders, unkeepSender } from '../../core/feedback';
+import { getJunkSenders, getKeptSenders, unkeepSender, unmarkJunkSender, type KeptSender } from '../../core/feedback';
 import { clearEmbeddings } from '../../core/embeddings';
 import { clearSavedVerdicts, getSavedVerdicts } from '../../core/junkScores';
 import { getBackfillState, resetBackfill } from '../../core/backfill';
@@ -17,7 +17,8 @@ import {
   setSenderCategory,
 } from '../../core/smartCategories';
 import { describeRule } from '../chat/cards';
-import { TAGS } from '../../core/autotag';
+import { clearConversations } from '../../core/conversations';
+import { allTags, ensureTags, makeCustomTag, type TagDef, type TagSuggestion } from '../../core/autotag';
 
 const TEXT_FIELDS = ['baseUrl', 'apiKey', 'model', 'embeddingModel'] as const;
 const NUM_FIELDS = ['temperature', 'maxToolSteps', 'maxCharsPerMessage', 'historyCharBudget', 'followupDays', 'followupLookbackDays'] as const;
@@ -31,13 +32,7 @@ function fill(s: Settings) {
   for (const f of BOOL_FIELDS) input(f).checked = !!s[f];
   ($('#toolMode') as HTMLSelectElement).value = s.toolMode;
   input('digestTime').value = s.digestTime;
-  const box = $('#tagKeys');
-  box.replaceChildren(
-    el('span', { class: 'muted' }, 'Tags to use:'),
-    ...TAGS.map((t) =>
-      el('label', { class: 'row' }, el('input', { type: 'checkbox', 'data-tag': t.key, checked: !s.autoTagKeys.length || s.autoTagKeys.includes(t.key) }), el('span', { style: { color: t.color } }, '●'), t.label),
-    ),
-  );
+  renderTags(s);
   $('#detected').textContent = s.toolMode === 'auto' && s.detectedToolMode ? `Detected: ${s.detectedToolMode === 'json' ? 'compatibility mode' : 'native'}` : '';
 }
 
@@ -51,10 +46,135 @@ function read(): Partial<Settings> {
   for (const f of BOOL_FIELDS) (out as any)[f] = input(f).checked;
   out.toolMode = ($('#toolMode') as HTMLSelectElement).value as Settings['toolMode'];
   if (/^\d{1,2}:\d{2}$/.test(input('digestTime').value)) out.digestTime = input('digestTime').value;
-  const keys = [...document.querySelectorAll<HTMLInputElement>('#tagKeys input[data-tag]')].filter((b) => b.checked).map((b) => b.dataset.tag!);
-  out.autoTagKeys = keys.length === TAGS.length ? [] : keys;
+  out.autoTagKeys = tagKeysFor(checkedTagKeys(), shownTags);
   return out;
 }
+
+// ---------- Tags ----------
+let shownTags: TagDef[] = [];
+
+const checkedTagKeys = () => [...document.querySelectorAll<HTMLInputElement>('#tagKeys input[data-tag]')].filter((b) => b.checked).map((b) => b.dataset.tag!);
+/** autoTagKeys: empty means "all tags", which also lets tags added later be used straight away. */
+const tagKeysFor = (checked: string[], all: TagDef[]) => (all.every((t) => checked.includes(t.key)) ? [] : checked.filter((k) => all.some((t) => t.key === k)));
+
+function renderTags(s: Settings, checked?: string[]) {
+  shownTags = allTags(s);
+  const on = (k: string) => (checked ? checked.includes(k) : !s.autoTagKeys.length || s.autoTagKeys.includes(k));
+  const custom = new Set((s.customTags ?? []).map((t) => t.key));
+  $('#tagKeys').replaceChildren(
+    el('span', { class: 'muted' }, 'Tags to use:'),
+    ...shownTags.map((t) => {
+      const parts: Node[] = [
+        el('label', { class: 'row', title: t.hint }, el('input', { type: 'checkbox', 'data-tag': t.key, checked: on(t.key) }), el('span', { style: { color: t.color } }, '●'), t.label),
+      ];
+      if (custom.has(t.key)) {
+        const rm = el('button', { class: 'small ghost', title: `Remove “${t.label}” from MailMind's tags` }, '✕');
+        rm.addEventListener('click', () => removeTag(t));
+        parts.push(rm);
+      }
+      return el('span', { class: 'row' }, ...parts);
+    }),
+  );
+}
+
+async function thunderbirdTags(): Promise<{ key: string; tag: string; color?: string }[]> {
+  return ((await messenger.messages.tags.list().catch(() => [])) ?? []) as any[];
+}
+
+/** Saves a new custom tag straight away (keeping the other tag ticks as they are on screen) and creates it in Thunderbird. */
+async function addTag(input: { label: string; hint: string; color?: string }): Promise<TagDef> {
+  const s = await getSettings();
+  const checked = checkedTagKeys();
+  const tag = makeCustomTag(input, allTags(s), await thunderbirdTags());
+  const customTags = [...(s.customTags ?? []), tag];
+  const all = allTags({ customTags });
+  const next = await saveSettings({ customTags, autoTagKeys: tagKeysFor([...checked, tag.key], all) });
+  await ensureTags([tag.key], all);
+  renderTags(next, [...checked, tag.key]);
+  return tag;
+}
+
+async function removeTag(t: TagDef) {
+  if (!confirm(`Remove “${t.label}” from MailMind's tags? Emails that already have it keep it, and the tag stays in Thunderbird.`)) return;
+  const s = await getSettings();
+  const checked = checkedTagKeys().filter((k) => k !== t.key);
+  const customTags = (s.customTags ?? []).filter((c) => c.key !== t.key);
+  const next = await saveSettings({ customTags, autoTagKeys: tagKeysFor(checked, allTags({ customTags })) });
+  renderTags(next, checked);
+}
+
+async function fillTbTagList() {
+  $('#tbTags').replaceChildren(...(await thunderbirdTags()).map((t) => el('option', { value: t.tag })));
+}
+
+$('#btn-add-tag').addEventListener('click', async () => {
+  const r = $('#tag-add-result');
+  try {
+    const t = await addTag({ label: input('newTagLabel').value, hint: input('newTagHint').value, color: input('newTagColor').value });
+    input('newTagLabel').value = input('newTagHint').value = '';
+    r.className = 'small ok-text';
+    r.textContent = `✓ Added “${t.label}”`;
+  } catch (e) {
+    r.className = 'small err-text';
+    r.textContent = (e as Error).message;
+  }
+});
+
+function suggestionRow(sg: TagSuggestion): HTMLElement {
+  const name = el('input', { type: 'text', value: sg.label, maxlength: '30', style: { width: 'auto' } }) as HTMLInputElement;
+  const hint = el('input', { type: 'text', value: sg.hint, maxlength: '200' }) as HTMLInputElement;
+  const note = el('span', { class: 'small' });
+  const add = el('button', { class: 'small primary' }, 'Add');
+  const dismiss = el('button', { class: 'small ghost' }, 'Not useful');
+  const row = el(
+    'div',
+    { class: 'item' },
+    el(
+      'div',
+      { class: 'grow' },
+      el('div', { class: 'row' }, name, add, dismiss, note),
+      hint,
+      sg.examples.length ? el('div', { class: 'small muted' }, `e.g. ${sg.examples.map((x) => `“${x}”`).join(', ')}`) : null,
+    ),
+  );
+  add.addEventListener('click', async () => {
+    try {
+      const t = await addTag({ label: name.value, hint: hint.value });
+      row.replaceChildren(el('div', { class: 'small ok-text' }, `✓ Added “${t.label}”`));
+    } catch (e) {
+      note.className = 'small err-text';
+      note.textContent = (e as Error).message;
+    }
+  });
+  dismiss.addEventListener('click', () => row.remove());
+  return row;
+}
+
+$('#btn-suggest-tags').addEventListener('click', async () => {
+  const b = $('#btn-suggest-tags') as HTMLButtonElement;
+  const r = $('#tag-suggest-result');
+  const box = $('#tag-suggestions');
+  b.disabled = true;
+  r.className = 'small muted';
+  r.textContent = 'Reading the subjects of your recent mail… (this can take a minute)';
+  box.replaceChildren();
+  try {
+    await save();
+    const res: any = await messenger.runtime.sendMessage({ type: 'suggestTags' });
+    if (res?.error) throw new Error(res.error);
+    const list: TagSuggestion[] = res?.suggestions ?? [];
+    r.className = 'small';
+    r.textContent = list.length
+      ? `Ideas from ${res.scanned} recent emails. Edit them if you like, then Add the ones you want. Nothing is created until you do.`
+      : `Looked at ${res?.scanned ?? 0} recent emails; no new tag ideas stood out.`;
+    box.replaceChildren(...list.map(suggestionRow));
+  } catch (e) {
+    r.className = 'small err-text';
+    r.textContent = (e as Error).message;
+  } finally {
+    b.disabled = false;
+  }
+});
 
 async function ensurePermission(url: string): Promise<boolean> {
   const pattern = originPattern(url);
@@ -170,16 +290,21 @@ async function renderRules() {
   }
 }
 
-async function renderKept() {
-  const box = $('#kept');
-  const list = await getKeptSenders();
+function renderKept() {
+  renderSenderList('#kept', getKeptSenders, unkeepSender, 'None yet. Use “👍 Not junk” in the clean-up review.');
+  renderSenderList('#junked', getJunkSenders, unmarkJunkSender, 'None yet. Use “👎 Junk” in the clean-up review.');
+}
+
+async function renderSenderList(sel: string, get: () => Promise<KeptSender[]>, remove: (a: string) => Promise<void>, empty: string) {
+  const box = $(sel);
+  const list = await get();
   box.replaceChildren();
-  if (!list.length) return box.append(el('div', { class: 'muted small' }, 'None yet. Use “👍 Not junk” in the clean-up review.'));
+  if (!list.length) return box.append(el('div', { class: 'muted small' }, empty));
   for (const k of list.slice(0, 200)) {
     const del = el('button', { class: 'small' }, 'Remove');
     del.addEventListener('click', async () => {
-      await unkeepSender(k.address);
-      renderKept();
+      await remove(k.address);
+      renderSenderList(sel, get, remove, empty);
     });
     box.append(
       el(
@@ -232,8 +357,8 @@ async function renderUndo() {
 }
 
 $('#btn-clear-chat').addEventListener('click', async () => {
-  await messenger.storage.local.remove('chatHistory');
-  $('#data-result').textContent = '✓ Chat history cleared';
+  await clearConversations();
+  $('#data-result').textContent = '✓ All saved conversations cleared';
 });
 $('#btn-clear-emb').addEventListener('click', async () => {
   await clearEmbeddings();
@@ -317,6 +442,7 @@ messenger.storage.onChanged.addListener((changes: any, area: string) => {
 
 (async () => {
   fill(await getSettings());
+  fillTbTagList();
   renderJunkStatus();
   renderSmart();
   renderRules();

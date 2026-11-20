@@ -40,6 +40,8 @@ export async function keepSender(s: { address: string; name?: string; sample?: s
   const list = (await getKeptSenders()).filter((k) => k.address !== address);
   list.unshift({ address, name: s.name || undefined, domain: domainOf(address), sample: s.sample?.slice(0, 120), at: Date.now() });
   await messenger.storage.local.set({ [KEY]: list.slice(0, MAX_KEPT) });
+  // "Not junk" and "Junk" are opposites: the latest answer wins.
+  await unmarkJunkSender(address);
   // The user's word replaces the model's: if they later undo this, the sender is judged afresh rather than
   // falling back to an old AI verdict.
   await forgetSenders([address]);
@@ -71,4 +73,47 @@ export function keptPromptHint(list: KeptSender[], max = 15): string {
     .slice(0, max)
     .map((k) => `- ${k.name ? `${k.name.slice(0, 40)} ` : ''}<${k.address}>${k.sample ? ` e.g. "${k.sample.slice(0, 60)}"` : ''}`);
   return `\nThe user has told us these senders are NOT junk. Treat similar senders (same organisation, same kind of mail) as wanted:\n${lines.join('\n')}`;
+}
+
+/*
+ * Senders the user has told us ARE junk (the "👎 Junk" button). The mirror image of the list above:
+ *  1. that exact address is always shown as junk and never sent to the AI again;
+ *  2. other senders on the same (non-freemail) domain get a nudge towards junk;
+ *  3. the most recent ones are listed in the AI prompt as examples of mail the user doesn't want.
+ * It only teaches MailMind; no email is moved or deleted.
+ */
+const JUNK_KEY = 'junkSenders';
+
+export async function getJunkSenders(): Promise<KeptSender[]> {
+  const s = await messenger.storage.local.get(JUNK_KEY);
+  return (s?.[JUNK_KEY] as KeptSender[]) ?? [];
+}
+
+export async function markJunkSender(s: { address: string; name?: string; sample?: string }): Promise<void> {
+  const address = s.address.toLowerCase();
+  const list = (await getJunkSenders()).filter((k) => k.address !== address);
+  list.unshift({ address, name: s.name || undefined, domain: domainOf(address), sample: s.sample?.slice(0, 120), at: Date.now() });
+  await messenger.storage.local.set({ [JUNK_KEY]: list.slice(0, MAX_KEPT) });
+  await unkeepSender(address);
+  await forgetSenders([address]);
+}
+
+export async function unmarkJunkSender(address: string): Promise<void> {
+  const a = address.toLowerCase();
+  const list = await getJunkSenders();
+  if (list.some((k) => k.address === a)) await messenger.storage.local.set({ [JUNK_KEY]: list.filter((k) => k.address !== a) });
+}
+
+/** Prompt addition listing recent senders the user called junk. */
+export function junkPromptHint(list: KeptSender[], max = 15): string {
+  if (!list.length) return '';
+  const lines = list
+    .slice(0, max)
+    .map((k) => `- ${k.name ? `${k.name.slice(0, 40)} ` : ''}<${k.address}>${k.sample ? ` e.g. "${k.sample.slice(0, 60)}"` : ''}`);
+  return `\nThe user has told us these senders ARE junk. Treat similar mail (same organisation, same kind of mail) as unwanted:\n${lines.join('\n')}`;
+}
+
+/** Both feedback lists as one prompt addition. */
+export function feedbackPromptHint(kept: KeptSender[], junk: KeptSender[]): string {
+  return keptPromptHint(kept) + junkPromptHint(junk);
 }
