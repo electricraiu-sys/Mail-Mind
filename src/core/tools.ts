@@ -4,6 +4,7 @@ import type { Settings } from './settings';
 import type { ActionKind, MessageHeader, Verdict } from './types';
 import { ACTION_KINDS, VERDICTS } from './types';
 import {
+  collapseGmailCopies,
   collectMessages,
   folderLabel,
   getBodyText,
@@ -281,6 +282,8 @@ export function createTools(deps: ToolDeps): ToolHandler[] {
           const exact = str(a.query.from);
           if (exact && exact.includes('@')) messages = messages.filter((m) => parseAddress(m.author).address === exact.toLowerCase());
         } else return 'ERROR: provide messageIds or query.';
+        // Show each Gmail email once, not once per label (Inbox + All Mail).
+        if (kind === 'delete' || kind === 'move' || kind === 'archive') messages = collapseGmailCopies(messages);
         if (!messages.length) return 'No matching messages found; nothing proposed.';
         let folder: { id?: string; label?: string; error?: string } = {};
         if (kind === 'move') {

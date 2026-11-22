@@ -50,6 +50,27 @@ export function hasUse(f: MailFolder | undefined, ...uses: string[]): boolean {
   return !!f?.specialUse?.some((u) => uses.includes(u));
 }
 
+/** Gmail's "All Mail" folder ([Gmail]/All Mail, [Google Mail]/All Mail, or a localized name with the \All flag). */
+export function isGmailAllMail(f: MailFolder | undefined): boolean {
+  if (!f || !/^\/\[(gmail|google mail)\]\//i.test(f.path ?? '')) return false;
+  return hasUse(f, 'all', 'archives') || /^all mail$/i.test(f.name ?? '');
+}
+
+/**
+ * Gmail shows every message in each of its labels, so an Inbox email also sits in [Gmail]/All Mail with the
+ * same Message-ID. When a list holds both copies, this drops the All Mail one: moving the other copy (to Trash
+ * or a folder) is enough on Gmail, and touching All Mail makes Thunderbird resync the whole mailbox, which is
+ * what made deleting a few dozen emails take minutes.
+ */
+export function collapseGmailCopies(list: MessageHeader[]): MessageHeader[] {
+  const key = (h: MessageHeader) => `${h.folder?.accountId ?? ''}\n${h.headerMessageId}`;
+  const elsewhere = new Set<string>();
+  for (const h of list) {
+    if (h.headerMessageId && !isGmailAllMail(h.folder) && !hasUse(h.folder, 'trash', 'junk')) elsewhere.add(key(h));
+  }
+  return list.filter((h) => !(isGmailAllMail(h.folder) && h.headerMessageId && elsewhere.has(key(h))));
+}
+
 export async function folderLabel(f: MailFolder): Promise<string> {
   const names = await getAccountNames();
   return `${names.get(f.accountId) ?? f.accountId}${f.path}`;

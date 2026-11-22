@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { executeAction, undo, getUndoLog, onQueueChange, pendingActions, type QueuePosition, type QueueSnapshot } from '../src/core/actions';
 import { fakeMessenger, header, INBOX, RECEIPTS, TRASH } from './helpers';
+import type { MailFolder } from '../src/core/types';
 
 describe('executeAction + undo', () => {
   it('overlapping actions queue up in order and every one lands in the undo log', async () => {
@@ -60,6 +61,24 @@ describe('executeAction + undo', () => {
     const inInbox = [...api.store.values()].filter((m) => m.folder?.id === INBOX.id).map((m) => m.headerMessageId).sort();
     expect(inInbox).toEqual(['msg-1@example.com', 'msg-2@example.com']);
     expect((await getUndoLog())[0].undone).toBe(true);
+  });
+
+  it('Gmail: deleting an email listed in both Inbox and All Mail moves only the Inbox copy', async () => {
+    const G_INBOX: MailFolder = { id: 'g://INBOX', accountId: 'g', path: '/INBOX', name: 'Inbox', specialUse: ['inbox'] };
+    const G_ALL: MailFolder = { id: 'g://all', accountId: 'g', path: '/[Gmail]/All Mail', name: 'All Mail', specialUse: ['archives'] };
+    const G_TRASH: MailFolder = { id: 'g://trash', accountId: 'g', path: '/[Gmail]/Trash', name: 'Trash', specialUse: ['trash'] };
+    const api = fakeMessenger(
+      [
+        header({ id: 1, folder: G_INBOX, headerMessageId: 'a@x' }),
+        header({ id: 2, folder: G_ALL, headerMessageId: 'a@x' }),
+        header({ id: 3, folder: G_ALL, headerMessageId: 'archived-only@x' }), // only in All Mail → still deleted
+      ],
+      [G_INBOX, G_ALL, G_TRASH],
+    );
+    const { entry, skipped } = await executeAction('delete', [1, 2, 3]);
+    expect(api.calls.filter((c) => c.method === 'move').map((c) => c.args)).toEqual([[[1, 3], G_TRASH.id]]);
+    expect(entry.count).toBe(2);
+    expect(skipped).toBe(0);
   });
 
   it('move requires a folder and undo moves back', async () => {

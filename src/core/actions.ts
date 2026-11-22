@@ -1,6 +1,6 @@
 import type { ActionKind, MessageHeader } from './types';
 import { ACTION_LABELS } from './types';
-import { getHeaders, trashFolderFor, hasUse, collectMessages } from './mail';
+import { getHeaders, trashFolderFor, hasUse, collectMessages, collapseGmailCopies } from './mail';
 
 /**
  * Executes user-approved actions in batches and records an undo log.
@@ -146,15 +146,18 @@ async function executeNow(kind: ActionKind, messageIds: number[], opts: ExecuteO
   const headers = await getHeaders(unique);
   let skipped = unique.length - headers.length;
 
-  let targets: MessageHeader[] = headers;
+  // Gmail: one move of the Inbox (or label) copy covers the All Mail copy too, and skips a slow All Mail resync.
+  let targets: MessageHeader[] = MOVE_KINDS.includes(kind) ? collapseGmailCopies(headers) : headers;
   if (kind === 'delete') {
     // Already in Trash → deleting again would be permanent, so skip them.
-    targets = headers.filter((h) => !hasUse(h.folder, 'trash'));
-    skipped += headers.length - targets.length;
+    const before = targets.length;
+    targets = targets.filter((h) => !hasUse(h.folder, 'trash'));
+    skipped += before - targets.length;
   }
   if (kind === 'move') {
-    targets = headers.filter((h) => h.folder?.id !== opts.folderId);
-    skipped += headers.length - targets.length;
+    const before = targets.length;
+    targets = targets.filter((h) => h.folder?.id !== opts.folderId);
+    skipped += before - targets.length;
   }
 
   const entry: UndoEntry = {
