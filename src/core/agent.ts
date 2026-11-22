@@ -15,6 +15,24 @@ export interface AgentEvents {
   onToolStart?(name: string, args: Record<string, any>): void;
   onToolEnd?(name: string, result: string, isError: boolean): void;
   onModeSwitch?(mode: 'native' | 'json'): void;
+  /** The reply just shown was false (see ClaimGuard) and is being replaced: remove it from the screen. */
+  onRetract?(): void;
+}
+
+/**
+ * Small local models sometimes write "I've prepared a proposal, click Approve" without ever calling the tool
+ * that shows it. This catches that: if a reply claims a card exists but no card tool ran this turn, the model
+ * is sent back once to actually make the call.
+ */
+export interface ClaimGuard {
+  /** Tools that put a card on screen for the user. */
+  tools: string[];
+  /** Matches a reply that says such a card was prepared. */
+  claim: RegExp;
+  /** Told to the model when it claims a card without calling a tool. */
+  nudge: string;
+  /** Appended if the model still makes the claim without a tool call. */
+  correction: string;
 }
 
 export interface AgentOptions {
@@ -29,6 +47,7 @@ export interface AgentOptions {
   historyCharBudget?: number;
   events?: AgentEvents;
   signal?: AbortSignal;
+  claimGuard?: ClaimGuard;
 }
 
 export interface AgentResult {
@@ -71,6 +90,30 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
   const defs = o.tools.map((t) => t.def);
   let mode = o.mode;
   let finalText = '';
+  const guard = o.claimGuard;
+  let cardShown = false;
+  let nudged = false;
+  /** Sent with the next request only (never saved): the false reply and the nudge about it. */
+  let retry: ChatMessage[] = [];
+
+  /**
+   * Checks a final reply. Returns null if the model should get another go; otherwise the reply to keep, with a
+   * correction added if it still claims a card that doesn't exist.
+   */
+  const checkClaim = (content: string): string | null => {
+    if (!guard || cardShown || !guard.claim.test(content)) return content;
+    if (!nudged) {
+      nudged = true;
+      ev.onRetract?.();
+      retry = [
+        { role: 'assistant', content },
+        { role: 'user', content: guard.nudge },
+      ];
+      return null;
+    }
+    ev.onDelta?.(guard.correction);
+    return content + guard.correction;
+  };
 
   const runTool = async (name: string, args: Record<string, any> | null): Promise<string> => {
     const tool = byName.get(name);
@@ -93,6 +136,7 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
       }
     }
     result = truncate(result, maxResult);
+    if (!isError && guard?.tools.includes(name) && !/nothing (was )?proposed|^no matching/i.test(result)) cardShown = true;
     ev.onToolEnd?.(name, result, isError);
     return result;
   };
@@ -101,7 +145,8 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
     if (o.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     const trimmed = trimHistory(o.history, budget);
     const system = mode === 'json' ? `${o.system}\n\n${toolsToPrompt(defs)}` : o.system;
-    const messages: ChatMessage[] = [{ role: 'system', content: system }, ...trimmed];
+    const messages: ChatMessage[] = [{ role: 'system', content: system }, ...trimmed, ...retry];
+    retry = [];
 
     ev.onAssistantStart?.();
     let content = '';
@@ -138,6 +183,9 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
         }
         continue;
       }
+      const kept = checkClaim(content);
+      if (kept === null) continue;
+      content = kept;
       o.history.push({ role: 'assistant', content });
       ev.onAssistantEnd?.(content, false);
       finalText = content;
@@ -154,6 +202,9 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
       continue;
     }
     ev.onDelta?.(content);
+    const kept = checkClaim(content);
+    if (kept === null) continue;
+    content = kept;
     o.history.push({ role: 'assistant', content });
     ev.onAssistantEnd?.(content, false);
     finalText = content;

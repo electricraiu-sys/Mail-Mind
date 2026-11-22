@@ -50,25 +50,53 @@ export function hasUse(f: MailFolder | undefined, ...uses: string[]): boolean {
   return !!f?.specialUse?.some((u) => uses.includes(u));
 }
 
+const GMAIL_SYSTEM = /^\/\[(gmail|google mail)\]\//i;
+
 /** Gmail's "All Mail" folder ([Gmail]/All Mail, [Google Mail]/All Mail, or a localized name with the \All flag). */
 export function isGmailAllMail(f: MailFolder | undefined): boolean {
-  if (!f || !/^\/\[(gmail|google mail)\]\//i.test(f.path ?? '')) return false;
+  if (!f || !GMAIL_SYSTEM.test(f.path ?? '')) return false;
   return hasUse(f, 'all', 'archives') || /^all mail$/i.test(f.name ?? '');
 }
 
-/**
- * Gmail shows every message in each of its labels, so an Inbox email also sits in [Gmail]/All Mail with the
- * same Message-ID. When a list holds both copies, this drops the All Mail one: moving the other copy (to Trash
- * or a folder) is enough on Gmail, and touching All Mail makes Thunderbird resync the whole mailbox, which is
- * what made deleting a few dozen emails take minutes.
- */
-export function collapseGmailCopies(list: MessageHeader[]): MessageHeader[] {
-  const key = (h: MessageHeader) => `${h.folder?.accountId ?? ''}\n${h.headerMessageId}`;
-  const elsewhere = new Set<string>();
-  for (const h of list) {
-    if (h.headerMessageId && !isGmailAllMail(h.folder) && !hasUse(h.folder, 'trash', 'junk')) elsewhere.add(key(h));
+/** Accounts that are Gmail: they have the [Gmail]/… (or [Google Mail]/…) system folders. */
+export async function gmailAccountIds(): Promise<Set<string>> {
+  try {
+    return new Set((await listFolders()).filter((f) => GMAIL_SYSTEM.test(f.path ?? '')).map((f) => f.accountId));
+  } catch {
+    return new Set();
   }
-  return list.filter((h) => !(isGmailAllMail(h.folder) && h.headerMessageId && elsewhere.has(key(h))));
+}
+
+/** Which copy of a Gmail message to act on: the Inbox, then the user's own labels, then [Gmail]/…, All Mail last. */
+function gmailCopyRank(f: MailFolder | undefined): number {
+  if (hasUse(f, 'inbox')) return 0;
+  if (isGmailAllMail(f)) return 3;
+  if (GMAIL_SYSTEM.test(f?.path ?? '')) return 2;
+  return 1;
+}
+
+/**
+ * Gmail shows one message in every label it has, so an Inbox email can also sit in [Gmail]/Important,
+ * [Gmail]/All Mail and the user's own labels, all with the same Message-ID. Those copies are ONE message: moving
+ * any copy to Trash removes it from every label. This keeps one copy per message (preferring the Inbox), so
+ * counts are right and Thunderbird only has to open one folder instead of resyncing Important, All Mail, etc.
+ * — which is what made deleting a handful of emails hang for minutes. Copies in Trash/Junk and other
+ * (non-Gmail) accounts are left as they are.
+ */
+export async function collapseGmailCopies(list: MessageHeader[]): Promise<MessageHeader[]> {
+  const gmail = await gmailAccountIds();
+  // Also trust the list itself, in case listing folders failed.
+  for (const h of list) if (h.folder && GMAIL_SYSTEM.test(h.folder.path ?? '')) gmail.add(h.folder.accountId);
+  if (!gmail.size) return list;
+  const pick = new Map<string, MessageHeader>();
+  const inScope = (h: MessageHeader) => !!h.headerMessageId && gmail.has(h.folder?.accountId ?? '') && !hasUse(h.folder, 'trash', 'junk');
+  const key = (h: MessageHeader) => `${h.folder?.accountId}\n${h.headerMessageId}`;
+  for (const h of list) {
+    if (!inScope(h)) continue;
+    const best = pick.get(key(h));
+    if (!best || gmailCopyRank(h.folder) < gmailCopyRank(best.folder)) pick.set(key(h), h);
+  }
+  return list.filter((h) => !inScope(h) || pick.get(key(h)) === h);
 }
 
 export async function folderLabel(f: MailFolder): Promise<string> {

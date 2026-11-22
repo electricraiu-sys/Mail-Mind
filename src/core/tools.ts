@@ -181,7 +181,8 @@ export function createTools(deps: ToolDeps): ToolHandler[] {
       [],
       async (a, signal) => {
         const limit = Math.min(Math.max(Number(a.limit) || 30, 1), 100);
-        const all = await collectMessages(criteriaFrom(a), { limit: 5000, signal, onProgress: (n) => ui.progress(`Searching… ${n}`) });
+        // Count each Gmail email once, not once per label (Inbox + All Mail), so counts match the proposal card.
+        const all = await collapseGmailCopies(await collectMessages(criteriaFrom(a), { limit: 5000, signal, onProgress: (n) => ui.progress(`Searching… ${n}`) }));
         all.sort((x, y) => new Date(y.date).getTime() - new Date(x.date).getTime());
         if (!all.length) return 'No messages found.';
         const more = all.length >= 5000 ? '5000+' : String(all.length);
@@ -283,7 +284,7 @@ export function createTools(deps: ToolDeps): ToolHandler[] {
           if (exact && exact.includes('@')) messages = messages.filter((m) => parseAddress(m.author).address === exact.toLowerCase());
         } else return 'ERROR: provide messageIds or query.';
         // Show each Gmail email once, not once per label (Inbox + All Mail).
-        if (kind === 'delete' || kind === 'move' || kind === 'archive') messages = collapseGmailCopies(messages);
+        if (kind === 'delete' || kind === 'move' || kind === 'archive') messages = await collapseGmailCopies(messages);
         if (!messages.length) return 'No matching messages found; nothing proposed.';
         let folder: { id?: string; label?: string; error?: string } = {};
         if (kind === 'move') {
@@ -298,11 +299,11 @@ export function createTools(deps: ToolDeps): ToolHandler[] {
           messages,
           folderId: folder.id,
           folderLabel: folder.label,
-          tag: str(a.tag),
+          tag: kind === 'tag' ? str(a.tag) : undefined, // models sometimes pass a "tag" with other actions
           reason: str(a.reason),
         };
         ui.showProposal(p);
-        return `Proposal shown to the user: ${kind} ${messages.length} emails${folder.label ? ` → ${folder.label}` : ''}. It has NOT been executed; the user must approve it.`;
+        return `Proposal shown to the user: ${kind} ${messages.length} emails${folder.label ? ` → ${folder.label}` : ''}. It has NOT been executed; the user must approve it. The card with the Approve button is already on screen, so reply with ONE short sentence that only says what you found (e.g. "Found ${messages.length} emails from …") — don't mention the proposal, the card or approving.`;
       },
     ),
 

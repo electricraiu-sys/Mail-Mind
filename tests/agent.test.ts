@@ -4,6 +4,7 @@ import { LlmError, type ChatMessage, type ChatResult, type LlmClient } from '../
 import { createTools, type ToolUi, type Proposal } from '../src/core/tools';
 import { DEFAULT_SETTINGS } from '../src/core/settings';
 import { fakeMessenger, header } from './helpers';
+import { CARD_CLAIM_GUARD } from '../src/core/prompts';
 
 function scriptedLlm(script: (ChatResult | Error)[]) {
   const seen: { messages: ChatMessage[]; tools: boolean }[] = [];
@@ -125,6 +126,44 @@ describe('agent loop', () => {
     const history: ChatMessage[] = [{ role: 'user', content: 'read it' }];
     await runAgent({ llm, system: 's', history, tools: createTools({ llm, settings: DEFAULT_SETTINGS, ui }), mode: 'native' });
     expect(history.find((m) => m.role === 'tool')?.content).toMatch(/not valid JSON/);
+  });
+
+  it('a reply that claims a proposal without calling propose_actions is retracted and the model is sent back once', async () => {
+    const { llm, seen } = scriptedLlm([
+      { content: '', toolCalls: [call('search_messages', { from: 'junk@email.com' })] },
+      { content: "I've found 2 emails. I have prepared a proposal to move them to the Trash. Would you like to proceed?", toolCalls: [] },
+      { content: '', toolCalls: [call('propose_actions', { action: 'delete', messageIds: [1, 2] })] },
+      { content: 'The proposal is in Actions.', toolCalls: [] },
+    ]);
+    const { ui, proposals } = recordingUi();
+    let retracted = 0;
+    const history: ChatMessage[] = [{ role: 'user', content: 'find junk@email.com and delete them' }];
+    const r = await runAgent({
+      llm, system: 's', history, tools: createTools({ llm, settings: DEFAULT_SETTINGS, ui }), mode: 'native',
+      claimGuard: CARD_CLAIM_GUARD, events: { onRetract: () => retracted++ },
+    });
+    expect(retracted).toBe(1);
+    expect(proposals).toHaveLength(1);
+    expect(seen[2].messages.at(-1)?.content).toMatch(/did not call propose_actions/);
+    expect(r.finalText).toBe('The proposal is in Actions.');
+    // The false reply and the nudge are not saved in the conversation.
+    expect(history.some((m) => /Would you like to proceed/.test(m.content ?? ''))).toBe(false);
+  });
+
+  it('an honest proposal reply passes the guard; a repeated false claim gets a visible correction', async () => {
+    const honest = scriptedLlm([
+      { content: '', toolCalls: [call('propose_actions', { action: 'delete', messageIds: [1] })] },
+      { content: 'I prepared a proposal — click Approve on the card.', toolCalls: [] },
+    ]);
+    const r1 = await runAgent({ llm: honest.llm, system: 's', history: [{ role: 'user', content: 'x' }], tools: createTools({ llm: honest.llm, settings: DEFAULT_SETTINGS, ui: recordingUi().ui }), mode: 'native', claimGuard: CARD_CLAIM_GUARD });
+    expect(r1.finalText).toBe('I prepared a proposal — click Approve on the card.');
+
+    const stubborn = scriptedLlm([
+      { content: 'I prepared a proposal for you.', toolCalls: [] },
+      { content: 'I prepared a proposal for you.', toolCalls: [] },
+    ]);
+    const r2 = await runAgent({ llm: stubborn.llm, system: 's', history: [{ role: 'user', content: 'x' }], tools: createTools({ llm: stubborn.llm, settings: DEFAULT_SETTINGS, ui: recordingUi().ui }), mode: 'native', claimGuard: CARD_CLAIM_GUARD });
+    expect(r2.finalText).toMatch(/No proposal card was actually created/);
   });
 
   it('stops after maxSteps', async () => {

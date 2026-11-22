@@ -68,7 +68,8 @@ export function statusArea(deps: CardDeps) {
       const text = el('div', { class: 'small muted' }, label);
       node.append(text, bar.node);
       return (done: number, total: number) => {
-        text.textContent = `${label} ${done}/${total}`;
+        // Before the first batch lands, Thunderbird is opening/syncing the folder: say so rather than "0/10".
+        text.textContent = done === 0 && total ? `${label} ${plural(total, 'email')} — working…` : `${label} ${done}/${total}`;
         bar.set(total ? done / total : undefined);
       };
     },
@@ -80,12 +81,21 @@ export function statusArea(deps: CardDeps) {
       undoBtn.addEventListener('click', async () => {
         undoBtn.disabled = true;
         undoBtn.textContent = 'Undoing…';
+        const bar = progressBar();
+        const barText = el('div', { class: 'small muted' }, 'Undo — finding the emails…');
+        const undoProgress = el('div', null, barText, bar.node);
+        node.append(undoProgress);
         try {
-          const r = await undo(entry.id);
+          const r = await undo(entry.id, (done, total) => {
+            barText.textContent = done ? `Undo — putting back ${done}/${total}` : `Undo — finding ${plural(total, 'email')}…`;
+            bar.set(total ? done / total : undefined);
+          });
+          undoProgress.remove();
           msg.textContent = `↩ Undone: restored ${r.restored}${r.missing ? `, ${r.missing} couldn't be found` : ''}.`;
           undoBtn.remove();
           deps.note(`User clicked Undo on "${entry.label}" (restored ${r.restored}).`);
         } catch (e) {
+          undoProgress.remove();
           msg.textContent = `Undo failed: ${(e as Error).message}`;
           undoBtn.disabled = false;
           undoBtn.textContent = 'Undo';
@@ -713,51 +723,121 @@ export function proposalCard(p: Proposal, deps: CardDeps): HTMLElement {
   const destructive = p.kind === 'delete' || p.kind === 'mark_junk';
   const whyImportant = (m: Proposal['messages'][number]) => (destructive ? (m.flagged ? 'flagged by you' : importanceOf(m.subject, m.date).kind) : undefined);
   const risky = p.messages.filter((m) => whyImportant(m));
-  for (const m of p.messages.slice(0, SHOW)) {
+  const riskyIds = new Set(risky.map((m) => m.id));
+  type Msg = Proposal['messages'][number];
+
+  /** One email row: checkbox, date, sender, subject, why it may matter, and an "open" link. */
+  const row = (m: Msg, box: HTMLInputElement) => {
     const why = whyImportant(m);
+    const open = el('a', { href: '#', class: 'small' }, 'open');
+    open.addEventListener('click', (e) => {
+      e.preventDefault();
+      openMessage(m.id);
+    });
+    return el(
+      'label',
+      { class: 'msg-row' },
+      box,
+      el('span', { class: 'small muted date' }, formatDate(m.date)),
+      el('span', { class: 'small from' }, parseAddress(m.author).name || parseAddress(m.author).address),
+      el('span', { class: 'subj' }, m.subject || '(no subject)'),
+      why ? el('span', { class: 'small caution', title: `May be important: ${why}` }, `⚠ ${why}`) : null,
+      open,
+    );
+  };
+
+  for (const m of p.messages.slice(0, SHOW)) {
     const box = el('input', { type: 'checkbox', checked: true }) as HTMLInputElement;
     box.addEventListener('change', () => {
       if (box.checked) chosen.add(m.id);
       else chosen.delete(m.id);
       approve.textContent = approveLabel();
     });
-    const open = el('a', { href: '#', class: 'small' }, 'open');
-    open.addEventListener('click', (e) => {
-      e.preventDefault();
-      openMessage(m.id);
-    });
-    list.append(
-      el(
-        'label',
-        { class: 'msg-row' },
-        box,
-        el('span', { class: 'small muted date' }, formatDate(m.date)),
-        el('span', { class: 'small from' }, parseAddress(m.author).name || parseAddress(m.author).address),
-        el('span', { class: 'subj' }, m.subject || '(no subject)'),
-        why ? el('span', { class: 'small caution', title: `May be important: ${why}` }, `⚠ ${why}`) : null,
-        open,
-      ),
-    );
+    list.append(row(m, box));
   }
   const riskyNote = risky.length
     ? el(
         'div',
         { class: 'caution-panel' },
         el('div', { class: 'caution-title' }, `⚠ ${plural(risky.length, 'email')} here may be important`),
-        el('div', { class: 'small' }, 'They look like orders, receipts, bills, account mail or ones you flagged. Untick any you want to keep.'),
+        el(
+          'div',
+          { class: 'small' },
+          `They look like orders, receipts, bills, account mail or ones you flagged. Approve leaves them alone — you’ll see them listed afterwards and can decide about them separately.`,
+        ),
       )
     : null;
   if (p.messages.length > SHOW) list.append(el('div', { class: 'small muted' }, `…and ${p.messages.length - SHOW} more (included)`));
 
-  const approveLabel = () => `Approve (${chosen.size})`;
+  // Possibly important emails are never part of the main approval; they get their own confirmation after it.
+  const safeChosen = () => [...chosen].filter((id) => !riskyIds.has(id));
+  const heldBack = () => risky.filter((m) => chosen.has(m.id));
+  const approveLabel = () => {
+    const held = heldBack().length;
+    return held ? `Approve (${safeChosen().length}, ${held} held back)` : `Approve (${chosen.size})`;
+  };
+  const verb = p.kind === 'delete' ? 'Delete' : 'Mark as junk';
+  const heldNode = el('div', { class: 'hidden' });
+
+  /** After the main approval: lists the held-back emails so the user can delete them too, or keep them. */
+  function askAboutHeldBack(held: Msg[]) {
+    const pick = new Set(held.map((m) => m.id));
+    const heldStatus = statusArea(deps);
+    const rows = held.map((m) => {
+      const box = el('input', { type: 'checkbox', checked: true }) as HTMLInputElement;
+      box.addEventListener('change', () => (box.checked ? pick.add(m.id) : pick.delete(m.id)));
+      return row(m, box);
+    });
+    const goLabel = () => `${verb} ${plural(pick.size, 'email')} anyway`;
+    const go = confirmButton(goLabel, () => (p.kind === 'delete' ? `Confirm: move ${pick.size} to Trash` : `Confirm: mark ${pick.size} as junk`), async () => {
+      const ids = [...pick];
+      if (!ids.length) return;
+      go.disabled = keep.disabled = true;
+      const onProgress = heldStatus.working(`${ACTION_LABELS[p.kind]}…`);
+      try {
+        const { entry, skipped } = await executeAction(p.kind, ids, { onProgress, source: 'Chat proposal' });
+        heldStatus.done(entry, skipped);
+        deps.note(`User reviewed the held-back, possibly important emails and approved: ${entry.label}.`);
+      } catch (e) {
+        heldStatus.error(e);
+        go.disabled = keep.disabled = false;
+      }
+    });
+    for (const r of rows) r.querySelector('input')!.addEventListener('change', () => (go.textContent = goLabel()));
+    const keep = el('button', { class: 'primary' }, 'Keep them');
+    keep.addEventListener('click', () => {
+      go.disabled = keep.disabled = true;
+      heldNode.replaceChildren(el('div', { class: 'notice ok small' }, `Kept ${plural(held.length, 'possibly important email')}.`));
+      deps.note(`User kept the ${held.length} possibly important emails that were held back.`);
+    });
+    heldNode.replaceChildren(
+      el(
+        'div',
+        { class: 'caution-panel' },
+        el('div', { class: 'caution-title' }, `⚠ Held back: ${plural(held.length, 'email')} that may be important`),
+        el('div', { class: 'small' }, `These weren’t touched. Untick any you want to keep, then ${verb.toLowerCase()} the rest — or keep them all.`),
+        el('div', { class: 'msg-list' }, ...rows),
+        el('div', { class: 'row' }, keep, go),
+        heldStatus.node,
+      ),
+    );
+    heldNode.classList.remove('hidden');
+    heldNode.scrollIntoView({ block: 'nearest' });
+  }
+
   const doRun = async () => {
     approve.disabled = reject.disabled = true;
-    const onProgress = status.working(`${ACTION_LABELS[p.kind]}…`);
+    const ids = destructive ? safeChosen() : [...chosen];
+    const held = destructive ? heldBack() : [];
     try {
-      if (p.kind === 'tag' && p.tag) await ensureTags([p.tag], allTags(await getSettings()));
-      const { entry, skipped } = await executeAction(p.kind, [...chosen], { folderId: p.folderId, tag: p.tag, onProgress, source: 'Chat proposal' });
-      status.done(entry, skipped);
-      deps.note(`User approved: ${entry.label}.`);
+      if (ids.length) {
+        const onProgress = status.working(`${ACTION_LABELS[p.kind]}…`);
+        if (p.kind === 'tag' && p.tag) await ensureTags([p.tag], allTags(await getSettings()));
+        const { entry, skipped } = await executeAction(p.kind, ids, { folderId: p.folderId, tag: p.tag, onProgress, source: 'Chat proposal' });
+        status.done(entry, skipped);
+        deps.note(`User approved: ${entry.label}.${held.length ? ` ${held.length} possibly important emails were held back for a separate decision.` : ''}`);
+      }
+      if (held.length) askAboutHeldBack(held);
     } catch (e) {
       status.error(e);
       approve.disabled = reject.disabled = false;
@@ -765,7 +845,10 @@ export function proposalCard(p: Proposal, deps: CardDeps): HTMLElement {
   };
   const approve =
     p.kind === 'delete'
-      ? confirmButton(approveLabel(), () => `Confirm: move ${chosen.size} to Trash`, doRun)
+      ? confirmButton(approveLabel, () => {
+          const held = heldBack().length;
+          return `Confirm: move ${safeChosen().length} to Trash${held ? ` (${held} held back)` : ''}`;
+        }, doRun)
       : el('button', { class: 'primary', onclick: doRun }, approveLabel());
   const reject = el('button', null, 'Reject');
   reject.addEventListener('click', () => {
@@ -773,7 +856,7 @@ export function proposalCard(p: Proposal, deps: CardDeps): HTMLElement {
     root.classList.add('rejected');
     deps.note(`User rejected the proposal: ${title}.`);
   });
-  const root = card(title, p.reason ? el('div', { class: 'small reason' }, p.reason) : null, riskyNote, list,el('div', { class: 'card-actions row' }, approve, reject), status.node);
+  const root = card(title, p.reason ? el('div', { class: 'small reason' }, p.reason) : null, riskyNote, list, el('div', { class: 'card-actions row' }, approve, reject), status.node, heldNode);
   return root;
 }
 

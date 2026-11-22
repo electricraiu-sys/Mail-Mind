@@ -76,9 +76,64 @@ describe('executeAction + undo', () => {
       [G_INBOX, G_ALL, G_TRASH],
     );
     const { entry, skipped } = await executeAction('delete', [1, 2, 3]);
-    expect(api.calls.filter((c) => c.method === 'move').map((c) => c.args)).toEqual([[[1, 3], G_TRASH.id]]);
+    // One move per source folder: the Inbox copy of a@x, then the archived-only one from All Mail.
+    expect(api.calls.filter((c) => c.method === 'move').map((c) => c.args)).toEqual([
+      [[1], G_TRASH.id],
+      [[3], G_TRASH.id],
+    ]);
     expect(entry.count).toBe(2);
     expect(skipped).toBe(0);
+  });
+
+  it('Gmail: copies in Inbox and [Gmail]/Important are one message — only the Inbox copy is moved', async () => {
+    const G_INBOX: MailFolder = { id: 'g://INBOX', accountId: 'g', path: '/INBOX', name: 'Inbox', specialUse: ['inbox'] };
+    const G_IMP: MailFolder = { id: 'g://imp', accountId: 'g', path: '/[Gmail]/Important', name: 'Important', specialUse: [] };
+    const G_TRASH: MailFolder = { id: 'g://trash', accountId: 'g', path: '/[Gmail]/Trash', name: 'Trash', specialUse: ['trash'] };
+    const OTHER: MailFolder = { id: 'o://INBOX', accountId: 'o', path: '/INBOX', name: 'Inbox', specialUse: ['inbox'] };
+    const O_ARCH: MailFolder = { id: 'o://Arch', accountId: 'o', path: '/Archive', name: 'Archive', specialUse: ['archives'] };
+    const O_TRASH: MailFolder = { id: 'o://Trash', accountId: 'o', path: '/Trash', name: 'Trash', specialUse: ['trash'] };
+    const api = fakeMessenger(
+      [
+        header({ id: 1, folder: G_IMP, headerMessageId: 'a@x' }),
+        header({ id: 2, folder: G_INBOX, headerMessageId: 'a@x' }),
+        header({ id: 3, folder: G_IMP, headerMessageId: 'only-important@x' }),
+        // Not Gmail: two copies are really two copies, both go.
+        header({ id: 4, folder: OTHER, headerMessageId: 'b@x' }),
+        header({ id: 5, folder: O_ARCH, headerMessageId: 'b@x' }),
+      ],
+      [G_INBOX, G_IMP, G_TRASH, OTHER, O_ARCH, O_TRASH],
+    );
+    const { entry } = await executeAction('delete', [1, 2, 3, 4, 5]);
+    const moves = api.calls.filter((c) => c.method === 'move').map((c) => c.args);
+    // One move per source folder.
+    expect(moves).toEqual([
+      [[2], G_TRASH.id],
+      [[3], G_TRASH.id],
+      [[4], O_TRASH.id],
+      [[5], O_TRASH.id],
+    ]);
+    expect(entry.count).toBe(4);
+  });
+
+  it('undo of a big delete reads Trash once instead of searching the mailbox per email', async () => {
+    const ids = Array.from({ length: 60 }, (_, i) => i + 100);
+    const api = fakeMessenger(ids.map((id) => header({ id })));
+    const { entry } = await executeAction('delete', ids);
+    const queries: any[] = [];
+    const realQuery = api.messages.query;
+    api.messages.query = async (q: any) => {
+      queries.push(q);
+      return realQuery(q);
+    };
+    const progress: [number, number][] = [];
+    const r = await undo(entry.id, (d, t) => progress.push([d, t]));
+    expect(r).toEqual({ restored: 60, missing: 0 });
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toMatchObject({ folderId: TRASH.id });
+    expect(queries[0].headerMessageId).toBeUndefined();
+    expect(progress[0]).toEqual([0, 60]);
+    expect(progress.at(-1)).toEqual([60, 60]);
+    expect([...api.store.values()].every((m) => m.folder?.id === INBOX.id)).toBe(true);
   });
 
   it('move requires a folder and undo moves back', async () => {

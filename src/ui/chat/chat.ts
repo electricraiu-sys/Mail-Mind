@@ -4,7 +4,7 @@ import { getSettings, saveSettings, effectiveToolMode, isLocalUrl, originPattern
 import { LlmClient, describeLlmError, type ChatMessage } from '../../core/llm';
 import { runAgent } from '../../core/agent';
 import { createTools, type ToolUi } from '../../core/tools';
-import { chatSystemPrompt } from '../../core/prompts';
+import { chatSystemPrompt, CARD_CLAIM_GUARD } from '../../core/prompts';
 import { getAccountNames, getMyAddresses, getHeaders, headerLine } from '../../core/mail';
 import { renderMarkdown, stripThinking } from '../../core/text';
 import { senderReviewCard, proposalCard, filingCard, ruleCard, folderCard, draftCard, type CardDeps } from './cards';
@@ -361,7 +361,15 @@ async function send(text: string) {
       maxSteps: settings.maxToolSteps,
       historyCharBudget: settings.historyCharBudget,
       signal: task.controller.signal,
+      claimGuard: CARD_CLAIM_GUARD,
       events: {
+        onRetract() {
+          bubble?.node.remove();
+          bubble = null;
+          streamed = '';
+          statusText.textContent = 'Preparing a proposal';
+          toLog(typing);
+        },
         onAssistantStart() {
           streamed = '';
           bubble = null;

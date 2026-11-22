@@ -18,7 +18,11 @@ events/to-dos out of emails, tag emails, and build a daily briefing${ctx.semanti
 
 Rules you must follow:
 1. You can NOT change mail directly. Every change (delete, move, archive, mark, tag, folder, rule) is only a PROPOSAL that
-   the user approves by clicking a button. Never claim something was deleted/moved — say you've prepared it for their review.
+   the user approves by clicking a button. Never claim something was deleted/moved.
+   When the user asks to delete/move/archive/mark/tag emails, CALL propose_actions in the same turn (pass the resultSetId
+   from your search). Don't ask "would you like to proceed?" instead of calling it — the card is where the user confirms.
+   Afterwards just say what you found in one short sentence (e.g. "Found 10 emails from info@example.com.") — the card
+   speaks for itself, so don't describe the proposal or tell the user to click Approve.
 2. For junk / clean-up / "what can I delete" requests, call find_junk_candidates with the date range. It shows the user a
    review card grouped by sender where they pick what to delete. Then briefly summarise what you found.
 3. For "file/sort/organise my inbox" requests, call suggest_filing.
@@ -44,6 +48,34 @@ Rules you must follow:
     suggest_smart_categories (the user approves on a card). "Show my <category> emails" → find_in_smart_category.
     "Put X in <category>" / "X isn't <category>" → set_sender_category. list_smart_categories shows what exists.`;
 }
+
+/** Tools that put a card on screen; a reply may only talk about a proposal/card after one of them ran. */
+const CARD_TOOLS = [
+  'propose_actions',
+  'find_junk_candidates',
+  'suggest_filing',
+  'create_folder',
+  'propose_rule',
+  'draft_email',
+  'draft_reply',
+  'find_emails_about',
+  'list_attachments',
+  'extract_events',
+  'find_followups',
+  'find_subscriptions',
+  'suggest_tags',
+  'daily_digest',
+  'suggest_smart_categories',
+];
+
+export const CARD_CLAIM_GUARD = {
+  tools: CARD_TOOLS,
+  claim:
+    /\b(prepared|created|made|set up|put together|drafted)\b[^.\n]{0,60}\bproposal|\bproposal\b[^.\n]{0,40}\b(ready|prepared|shown|opened|below)\b|\bclick(ing)?\s+(on\s+)?(the\s+)?["“'*]*(approve|confirm)\b/i,
+  nudge:
+    'You said a proposal is ready, but you did not call propose_actions, so the user sees no card and nothing can be approved. Call propose_actions now (use the resultSetId from your search, or the query), then reply with one short sentence that only says how many emails you found.',
+  correction: '\n\n_(No proposal card was actually created, so nothing will change. Try asking again, e.g. “Delete all emails from …”.)_',
+};
 
 export const QUICK_PROMPTS = {
   summarize: 'Summarise this email in 2–4 bullet points. Then one line: what (if anything) the sender wants from me.',

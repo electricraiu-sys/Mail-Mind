@@ -31,28 +31,38 @@ export function $(sel: string, root: ParentNode = document): HTMLElement {
   return n as HTMLElement;
 }
 
+/**
+ * A progress bar that always shows it's alive: unknown or nothing done yet (0) → a sliding bar; part done → the
+ * filled part plus a moving shine (Thunderbird can spend a while on one folder before the count moves); done →
+ * full and still.
+ */
 export function progressBar(): { node: HTMLElement; set(fraction?: number): void } {
   const bar = el('div');
   const node = el('div', { class: 'progress indeterminate' }, bar);
   return {
     node,
     set(fraction?: number) {
-      if (fraction === undefined || !Number.isFinite(fraction)) {
+      if (fraction === undefined || !Number.isFinite(fraction) || fraction <= 0) {
         node.classList.add('indeterminate');
+        node.classList.remove('busy');
         bar.style.width = '';
       } else {
+        const f = Math.min(1, fraction);
         node.classList.remove('indeterminate');
-        bar.style.width = `${Math.round(Math.max(0, Math.min(1, fraction)) * 100)}%`;
+        node.classList.toggle('busy', f < 1);
+        bar.style.width = `${Math.round(f * 100)}%`;
       }
     },
   };
 }
 
 /** A button that needs a second click within a few seconds to confirm a destructive action. */
-export function confirmButton(label: string, confirmLabel: () => string, onConfirm: () => void | Promise<void>, cls = 'danger'): HTMLButtonElement {
+export function confirmButton(label: string | (() => string), confirmLabel: () => string, onConfirm: () => void | Promise<void>, cls = 'danger'): HTMLButtonElement {
   let armed = false;
   let timer: number | undefined;
-  const btn = el('button', { class: '' }, label);
+  // A function label is re-read on every reset, so counts that changed meanwhile stay right.
+  const text = () => (typeof label === 'function' ? label() : label);
+  const btn = el('button', { class: '' }, text());
   btn.addEventListener('click', async () => {
     if (!armed) {
       armed = true;
@@ -60,14 +70,14 @@ export function confirmButton(label: string, confirmLabel: () => string, onConfi
       btn.className = cls;
       timer = window.setTimeout(() => {
         armed = false;
-        btn.textContent = label;
+        btn.textContent = text();
         btn.className = '';
       }, 5000);
       return;
     }
     window.clearTimeout(timer);
     armed = false;
-    btn.textContent = label;
+    btn.textContent = text();
     btn.className = '';
     await onConfirm();
   });

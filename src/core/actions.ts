@@ -146,8 +146,8 @@ async function executeNow(kind: ActionKind, messageIds: number[], opts: ExecuteO
   const headers = await getHeaders(unique);
   let skipped = unique.length - headers.length;
 
-  // Gmail: one move of the Inbox (or label) copy covers the All Mail copy too, and skips a slow All Mail resync.
-  let targets: MessageHeader[] = MOVE_KINDS.includes(kind) ? collapseGmailCopies(headers) : headers;
+  // Gmail: one copy per message (the Inbox one) — moving it covers its other labels and skips slow folder resyncs.
+  let targets: MessageHeader[] = MOVE_KINDS.includes(kind) ? await collapseGmailCopies(headers) : headers;
   if (kind === 'delete') {
     // Already in Trash → deleting again would be permanent, so skip them.
     const before = targets.length;
@@ -203,9 +203,12 @@ async function executeNow(kind: ActionKind, messageIds: number[], opts: ExecuteO
       const trash = await trashFolderFor(accountId);
       if (trash) {
         entry.destFolderIds.push(trash.id);
-        for (const b of chunks(list, BATCH)) {
-          await messenger.messages.move(b.map((h) => h.id), trash.id);
-          progress(b.length);
+        // One source folder at a time: Thunderbird syncs each folder it moves from, so progress moves per folder.
+        for (const fromFolder of groupBy(list, (h) => h.folder?.id ?? '').values()) {
+          for (const b of chunks(fromFolder, BATCH)) {
+            await messenger.messages.move(b.map((h) => h.id), trash.id);
+            progress(b.length);
+          }
         }
       } else {
         for (const b of chunks(list, BATCH)) {
@@ -216,9 +219,11 @@ async function executeNow(kind: ActionKind, messageIds: number[], opts: ExecuteO
     }
   } else if (kind === 'move') {
     entry.destFolderIds.push(opts.folderId!);
-    for (const b of chunks(targets, BATCH)) {
-      await messenger.messages.move(b.map((h) => h.id), opts.folderId);
-      progress(b.length);
+    for (const fromFolder of groupBy(targets, (h) => h.folder?.id ?? '').values()) {
+      for (const b of chunks(fromFolder, BATCH)) {
+        await messenger.messages.move(b.map((h) => h.id), opts.folderId);
+        progress(b.length);
+      }
     }
   } else if (kind === 'archive') {
     for (const b of chunks(targets, BATCH)) {
@@ -306,11 +311,40 @@ async function undoNow(entryId: string, onProgress?: (done: number, total: numbe
   let restored = 0;
   let missing = 0;
   let done = 0;
+  const total = entry.items.length;
+  // Nothing done yet → the UI shows a busy bar while the folders are read.
+  onProgress?.(0, total);
+
+  /**
+   * Message-ID → current copies, read from the folders the emails should be in now, in ONE pass per folder.
+   * Searching the whole mailbox once per email (526 searches for 526 emails) is what made Undo look frozen.
+   * Emails not found there (moved again since, or an archive with no recorded destination) are looked up
+   * one by one, which is the rare case.
+   */
+  const wanted = new Set(entry.items.map((i) => i.headerMessageId).filter(Boolean));
+  const index = new Map<string, MessageHeader[]>();
+  const indexFolders = async (folderIds: string[]) => {
+    for (const folderId of new Set(folderIds.filter(Boolean))) {
+      let found: MessageHeader[] = [];
+      try {
+        found = await collectMessages({ folderId }, { limit: 200000, filter: (m) => wanted.has(m.headerMessageId) });
+      } catch {
+        /* folder gone — fall back to per-email lookup */
+      }
+      for (const m of found) {
+        const list = index.get(m.headerMessageId) ?? [];
+        list.push(m);
+        index.set(m.headerMessageId, list);
+      }
+    }
+  };
+  const find = async (item: UndoItem) => index.get(item.headerMessageId) ?? (await locate(item));
 
   if (MOVE_KINDS.includes(entry.kind)) {
+    await indexFolders(entry.destFolderIds);
     const moves = new Map<string, number[]>();
     for (const item of entry.items) {
-      const copies = await locate(item);
+      const copies = await find(item);
       const moved = copies.find((c) => {
         const fid = c.folder?.id ?? '';
         if (fid === item.fromFolderId) return false;
@@ -323,21 +357,29 @@ async function undoNow(entryId: string, onProgress?: (done: number, total: numbe
         const arr = moves.get(item.fromFolderId) ?? [];
         arr.push(moved.id);
         moves.set(item.fromFolderId, arr);
-      } else if (!alreadyBack) missing++;
-      onProgress?.(++done, entry.items.length);
+      } else {
+        if (!alreadyBack) missing++;
+        // Nothing to move for this one: count it as done straight away.
+        done++;
+      }
     }
+    if (done) onProgress?.(done, total);
     for (const [folderId, ids] of moves) {
       for (const b of chunks(ids, BATCH)) {
         await messenger.messages.move(b, folderId);
         restored += b.length;
+        done += b.length;
+        onProgress?.(done, total);
       }
     }
   } else {
+    await indexFolders(entry.items.map((i) => i.fromFolderId));
     for (const item of entry.items) {
-      const copies = await locate(item);
+      const copies = await find(item);
       const current = copies.find((c) => c.folder?.id === item.fromFolderId) ?? copies[0];
       if (!current) {
         missing++;
+        onProgress?.(++done, total);
         continue;
       }
       await messenger.messages.update(current.id, {
@@ -347,7 +389,7 @@ async function undoNow(entryId: string, onProgress?: (done: number, total: numbe
         tags: item.prev.tags,
       });
       restored++;
-      onProgress?.(++done, entry.items.length);
+      onProgress?.(++done, total);
     }
   }
   await markUndone(entryId);

@@ -115,5 +115,16 @@ input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px s
 .progress > div { height: 100%; background: var(--accent); width: 0; transition: width 0.2s; }
 .progress.indeterminate > div { width: 30%; animation: slide 1.2s infinite ease-in-out; }
 @keyframes slide { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
+/* Part done and still working: a shine sweeps across the track. */
+.progress.busy { position: relative; }
+.progress.busy::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 30%;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 45%, transparent), transparent);
+  animation: sweep 1.4s infinite ease-in-out;
+}
+@keyframes sweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(340%); } }
+@media (prefers-reduced-motion: reduce) {
+  .progress.indeterminate > div, .progress.busy::after { animation-duration: 3s; }
+}
 .ok-text { color: var(--ok); }
 .err-text { color: var(--danger); }
